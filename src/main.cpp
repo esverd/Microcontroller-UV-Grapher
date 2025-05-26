@@ -324,55 +324,65 @@ void displayInfo() {
   drawForecastGraph(top_y_offset); 
 }
 
-// Place this updated function in your main.cpp
-
 void drawForecastGraph(int start_y_offset) {
-    int padding = 3; // Screen edge padding for the graph area
+    int padding = 2; // Screen edge padding
 
-    // --- Font Definitions ---
-    int emphasized_uv_font = 4; // Larger font for the first (leftmost) UV value
-    int regular_uv_font = 2;    // Font for other UV values & all hour labels
+    // --- Font Size Definitions ---
+    int first_uv_val_font = 6;   // Prominent font for the first (leftmost) UV value
+    int other_uv_val_font = 4;   // Larger font for the next 5 UV values
+    int hour_label_font = 2;     // Readable font for all hour labels below bars
 
-    // --- Calculate Text Heights (needed for layout) ---
-    tft.setTextFont(emphasized_uv_font);
-    int emphasized_uv_text_h = tft.fontHeight(); // Height of the largest UV value text
+    // --- Calculate Text Heights (crucial for precise layout) ---
+    tft.setTextFont(first_uv_val_font);
+    int first_uv_text_h = tft.fontHeight();
 
-    tft.setTextFont(regular_uv_font);
-    int regular_text_h = tft.fontHeight();     // Height of other UV values and hour labels
+    tft.setTextFont(other_uv_val_font);
+    int other_uv_text_h = tft.fontHeight();
+
+    tft.setTextFont(hour_label_font);
+    int hour_label_text_h = tft.fontHeight();
 
     // --- Y-Position Calculations for Graph Elements ---
-    // UV values will be displayed in a line near the top of the graph area.
-    // The baseline for this text line is centered by the tallest possible text (emphasized_uv_font).
-    int uv_values_text_line_y = start_y_offset + padding + emphasized_uv_text_h / 2;
+    // Y for the large, first UV value (broken out, near the top of graph area)
+    int first_uv_value_y = start_y_offset + padding + first_uv_text_h / 2;
 
-    // Hour labels will be at the very bottom of the screen.
-    int hour_label_y = tft.height() - padding - regular_text_h / 2;
+    // Y for the line of the other 5 UV values (positioned below the first large one)
+    int other_uv_values_line_y = first_uv_value_y + first_uv_text_h / 2 + padding + other_uv_text_h / 2;
+    if (HOURLY_FORECAST_COUNT <= 1) { 
+        other_uv_values_line_y = first_uv_value_y; 
+    }
 
-    // The baseline for the bars (where they "sit").
-    // It's positioned just above the hour labels.
-    int graph_baseline_y = hour_label_y - regular_text_h / 2 - padding;
+    // Hour labels are at the very bottom.
+    int hour_label_y = tft.height() - padding - hour_label_text_h / 2;
 
-    // Calculate the maximum possible height for the bars.
-    // This is the space between the bottom of the UV values text line and the graph baseline.
-    int max_bar_pixel_height = graph_baseline_y - (uv_values_text_line_y + emphasized_uv_text_h / 2 + padding);
+    // Baseline for the bars.
+    int graph_baseline_y = hour_label_y - hour_label_text_h / 2 - padding;
+
+    // Max bar height calculation.
+    int bottom_of_uv_texts = (HOURLY_FORECAST_COUNT > 1) ? (other_uv_values_line_y + other_uv_text_h / 2) : (first_uv_value_y + first_uv_text_h / 2);
+    int max_bar_pixel_height = graph_baseline_y - (bottom_of_uv_texts + padding);
     
-    // Sanity checks for bar height
-    if (max_bar_pixel_height > tft.height() * 0.55) max_bar_pixel_height = tft.height() * 0.55; // Cap at ~55% of screen height
-    if (max_bar_pixel_height < 15) max_bar_pixel_height = 15; // Ensure a minimum sensible height
+    if (max_bar_pixel_height > tft.height() * 0.50) max_bar_pixel_height = tft.height() * 0.50; // Cap at 50% of screen height
+    if (max_bar_pixel_height < 15) max_bar_pixel_height = 15; 
 
-    // --- X-Position Calculations for Graph Elements ---
-    int graph_area_x_start = padding;
-    int graph_area_width = tft.width() - 2 * padding;
-    int bar_slot_width = graph_area_width / HOURLY_FORECAST_COUNT;
-    int bar_actual_width = bar_slot_width * 0.80; // Bars take 80% of their slot width for better presence
+    // --- X-Position Calculations ---
+    int graph_area_total_width = tft.width() - 2 * padding;
+    int bar_slot_width = graph_area_total_width / HOURLY_FORECAST_COUNT;
+    int bar_actual_width = bar_slot_width * 0.80; 
+    if (bar_actual_width < 5) bar_actual_width = 5;
+    // Calculate the starting X to center the entire block of bars
+    int graph_block_width = bar_slot_width * HOURLY_FORECAST_COUNT;
+    int graph_area_x_start = (tft.width() - graph_block_width) / 2;
+
 
     // --- Drawing Loop for Each Forecast Slot ---
     for (int i = 0; i < HOURLY_FORECAST_COUNT; ++i) {
+        // Calculate center X for the current bar AND its associated text labels
         int bar_center_x = graph_area_x_start + (i * bar_slot_width) + (bar_slot_width / 2);
 
         // --- Draw Hour Label ---
-        tft.setTextFont(regular_uv_font); // Using slightly larger font for hour labels
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextFont(hour_label_font); 
+        tft.setTextColor(TFT_WHITE, TFT_BLACK); // Opaque background for clarity
         tft.setTextDatum(MC_DATUM);
         if (forecastHours[i] != -1) {
             tft.drawString(String(forecastHours[i]), bar_center_x, hour_label_y);
@@ -380,59 +390,72 @@ void drawForecastGraph(int start_y_offset) {
             tft.drawString("-", bar_center_x, hour_label_y);
         }
 
-        // --- Draw Bar and UV Value Text ---
-        if (hourlyUV[i] >= 0 && forecastHours[i] != -1) {
-            float uvVal = hourlyUV[i];
-            int roundedUV = round(uvVal); // Round to nearest whole number
+        // --- Prepare Bar and UV Value Data ---
+        float uvVal = hourlyUV[i]; 
+        int roundedUV = -1;       
 
-            float max_uv_for_scaling = 12.0f; // UV values above this will still draw max height bar
+        if (uvVal >= -0.01f) { 
+            roundedUV = round(uvVal); 
+        }
+
+        // --- Draw Bar (if data is valid) ---
+        if (roundedUV != -1 && forecastHours[i] != -1) { 
+            float max_uv_for_scaling = 12.0f; 
             float uvValForBarScaling;
             if (uvVal > max_uv_for_scaling) uvValForBarScaling = max_uv_for_scaling;
-            else uvValForBarScaling = (uvVal < 0) ? 0 : uvVal; // Ensure non-negative for scaling
+            else uvValForBarScaling = (uvVal < 0) ? 0 : uvVal; 
             
             int bar_height = (int)((uvValForBarScaling / max_uv_for_scaling) * max_bar_pixel_height);
             if (bar_height < 0) bar_height = 0;
-            // Make very low UV values (but not zero) at least minimally visible
-            if (bar_height == 0 && roundedUV > 0 && uvVal > 0.05) bar_height = 2; // Min 2px height for small values
-            if (bar_height == 0 && roundedUV == 0) bar_height = 1; // 1px height for actual zero to show presence
+            if (bar_height == 0 && roundedUV == 0 && uvVal >= 0) bar_height = 1; 
+            else if (bar_height == 0 && roundedUV > 0) bar_height = 2;
+
 
             int bar_top_y = graph_baseline_y - bar_height;
 
-            // Determine bar color
             uint16_t barColor = TFT_DARKGREY; 
-            if (roundedUV < 1) barColor = TFT_DARKGREY; // Use for UV 0
-            else if (roundedUV < 3) barColor = TFT_GREEN;   // 1-2
-            else if (roundedUV < 6) barColor = TFT_YELLOW;  // 3-5
-            else if (roundedUV < 8) barColor = TFT_ORANGE;  // 6-7
-            else if (roundedUV < 11) barColor = TFT_RED;    // 8-10
-            else barColor = TFT_VIOLET;                     // 11+
+            if (roundedUV < 1) barColor = TFT_DARKGREY;
+            else if (roundedUV < 3) barColor = TFT_GREEN;  
+            else if (roundedUV < 6) barColor = TFT_YELLOW; 
+            else if (roundedUV < 8) barColor = TFT_ORANGE; 
+            else if (roundedUV < 11) barColor = TFT_RED;   
+            else barColor = TFT_VIOLET;                    
 
             tft.fillRect(bar_center_x - bar_actual_width / 2, bar_top_y, bar_actual_width, bar_height, barColor);
 
-            // --- Draw UV Value Text (above the bar, at fixed Y for alignment) ---
-            if (i == 0) { // Emphasize the first (leftmost) forecast value
-                tft.setTextFont(emphasized_uv_font);
-            } else {
-                tft.setTextFont(regular_uv_font);
+            // --- Draw UV Value Text ---
+            uint16_t uvTextColor = TFT_WHITE;
+            uint16_t uvTextBgColor = TFT_BLACK; // Explicit black background for numbers
+
+            if (barColor == TFT_YELLOW || barColor == TFT_ORANGE) {
+                uvTextColor = TFT_BLACK; 
             }
             
-            // Set text color for UV value for contrast
-            if (barColor == TFT_YELLOW || barColor == TFT_ORANGE) tft.setTextColor(TFT_BLACK); 
-            else tft.setTextColor(TFT_WHITE);
-            
+            int current_uv_text_y;
+            if (i == 0) { 
+                tft.setTextFont(first_uv_val_font);
+                current_uv_text_y = first_uv_value_y;
+            } else { 
+                tft.setTextFont(other_uv_val_font);
+                current_uv_text_y = other_uv_values_line_y;
+            }
+            tft.setTextColor(uvTextColor, uvTextBgColor); // Set text color WITH OPAQUE BACKGROUND
             tft.setTextDatum(MC_DATUM);
-            tft.drawString(String(roundedUV), bar_center_x, uv_values_text_line_y);
+            tft.drawString(String(roundedUV), bar_center_x, current_uv_text_y);
             
-        } else { // No valid data for this forecast slot
-            // Placeholder for UV value text
-            tft.setTextFont(regular_uv_font); // Use regular font for placeholder
-            tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+        } else { 
+            // No valid data, draw placeholders for UV value text
+            int placeholder_y;
+            if (i == 0) {
+                tft.setTextFont(first_uv_val_font);
+                placeholder_y = first_uv_value_y;
+            } else {
+                tft.setTextFont(other_uv_val_font);
+                placeholder_y = other_uv_values_line_y;
+            }
+            tft.setTextColor(TFT_DARKGREY, TFT_BLACK); // Opaque background
             tft.setTextDatum(MC_DATUM);
-            tft.drawString("-", bar_center_x, uv_values_text_line_y); 
-
-            // Placeholder for hour label (already handled above, but ensures consistency if logic changes)
-            tft.setTextFont(regular_uv_font);
-            tft.drawString("-", bar_center_x, hour_label_y);
+            tft.drawString("-", bar_center_x, placeholder_y); 
         }
     }
 }
