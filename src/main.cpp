@@ -574,7 +574,7 @@ void drawForecastGraph(int start_y_offset) {
 
     // --- Font Size Definitions ---
     int first_uv_val_font = 6;   // Prominent font for the first (leftmost) UV value
-    int other_uv_val_font = 2;   // Font for the next 5 UV values
+    int other_uv_val_font = 4;   // Font for the next 5 UV values
     int hour_label_font = 2;     // Font for all hour labels below bars
 
     // --- Calculate Text Heights (once per font) ---
@@ -582,103 +582,109 @@ void drawForecastGraph(int start_y_offset) {
     tft.setTextFont(other_uv_val_font); int other_uv_text_h = tft.fontHeight();
     tft.setTextFont(hour_label_font);   int hour_label_text_h = tft.fontHeight();
 
-    // --- Y-Position Calculations ---
+    // --- Y-Position Calculations for new "glanceable" layout ---
+
+    // UV Numbers will be positioned near the top of the graph area
     // Center Y for the large UV value of the first bar
     int first_uv_value_y = start_y_offset + padding + first_uv_text_h / 2;
-    // Center Y for the smaller UV values of subsequent bars
-    int other_uv_values_line_y = first_uv_value_y + first_uv_text_h / 2 + padding + other_uv_text_h / 2;
-    if (HOURLY_FORECAST_COUNT <= 1) { // If only one bar, use the first_uv_value_y for it
+    // Center Y for the other UV values. Let's align their tops with the first UV value's top for a cleaner look.
+    // To do this, their center would be: start_y_offset + padding + other_uv_text_h / 2
+    // However, to make them distinct, let's place them slightly lower or ensure alignment.
+    // For simplicity, let's keep the previous logic where 'other' values are on a separate conceptual line,
+    // but this line will be close to the first one.
+    // int other_uv_values_line_y = first_uv_value_y + first_uv_text_h / 2 - other_uv_text_h / 2; // Aligns centers if fonts were same, needs adjustment
+    // Let's try aligning the baseline of the numbers, or just placing the 'other' numbers slightly below the first large one.
+    // A simple approach: the "other" numbers are on a line that starts after the large number, or share a common top y reference.
+    // For now, let's keep the previous distinct line for other_uv_values, it worked with Font 6 & 2.
+    // With Font 6 & 4, their height difference is less.
+    int other_uv_values_line_y = first_uv_value_y + (first_uv_text_h / 2) - (other_uv_text_h / 2) ; // This aligns their Y centers vertically if first is reference.
+    // If first_uv_val_font (48px) and other_uv_val_font (26px), this means:
+    // first_uv_value_y center. other_uv_values_line_y center will be at the same Y.
+    // This is good for glanceability if the numbers should be on one "line".
+    // Let's test this alignment:
+    if (HOURLY_FORECAST_COUNT <= 1) {
         other_uv_values_line_y = first_uv_value_y;
     }
-    // Center Y for hour labels at the bottom of the screen
+
+
+    // Hour labels at the very bottom
     int hour_label_y = tft.height() - padding - hour_label_text_h / 2;
-    // Y-coordinate for the baseline of the bars (where they "sit")
+    // Baseline for bars (where they "sit" and grow upwards from)
     int graph_baseline_y = hour_label_y - hour_label_text_h / 2 - padding;
 
-    // Determine the Y-coordinate of the lowest point reached by any UV value text
-    int bottom_of_uv_texts = (HOURLY_FORECAST_COUNT > 1) ? (other_uv_values_line_y + other_uv_text_h / 2) : (first_uv_value_y + first_uv_text_h / 2);
-    // Calculate available pixel height for the bars
-    int max_bar_pixel_height = graph_baseline_y - (bottom_of_uv_texts + padding);
+    // Max bar height: from baseline up to just below the start_y_offset (top of graph area)
+    int max_bar_pixel_height = graph_baseline_y - (start_y_offset + padding);
+    if (max_bar_pixel_height < 10) max_bar_pixel_height = 10; // Ensure a minimum drawable area
 
-    // Sanity checks/constraints for bar height
-    if (max_bar_pixel_height > tft.height() * 0.60) max_bar_pixel_height = tft.height() * 0.60; // Cap max height
-    if (max_bar_pixel_height < 10) max_bar_pixel_height = 10; // Ensure a minimum drawable area if space is very tight
-
-    // --- X-Position Calculations ---
-    int graph_area_total_width = tft.width() - 2 * padding; // Usable width for all bars
-    int bar_slot_width = graph_area_total_width / HOURLY_FORECAST_COUNT; // Width for each bar + its spacing
-    int bar_actual_width = bar_slot_width * 0.75; // Actual width of the bar (75% of slot)
-    if (bar_actual_width < 4) bar_actual_width = 4; // Min bar width
-    if (bar_actual_width > 30) bar_actual_width = 30; // Max bar width
-    // Starting X to center the entire block of bars
+    // --- X-Position Calculations (remain similar) ---
+    int graph_area_total_width = tft.width() - 2 * padding;
+    int bar_slot_width = graph_area_total_width / HOURLY_FORECAST_COUNT;
+    int bar_actual_width = bar_slot_width * 0.75;
+    if (bar_actual_width < 4) bar_actual_width = 4;
+    if (bar_actual_width > 30) bar_actual_width = 30; // Max bar width for aesthetics
     int graph_area_x_start = (tft.width() - (bar_slot_width * HOURLY_FORECAST_COUNT)) / 2 + padding;
 
-
     #if DEBUG_GRAPH_DRAWING
-    if (true) { // Change to i == 0 to debug only first bar
-        Serial.println("\n--- Graph Drawing Debug ---");
+    if (true) {
+        Serial.println("\n--- Graph Drawing Debug (Glanceable Layout) ---");
         Serial.printf("Screen H: %d, W: %d\n", tft.height(), tft.width());
         Serial.printf("start_y_offset: %d\n", start_y_offset);
-        Serial.printf("Font Heights: UV1=%d, UV_other=%d, HourLabel=%d\n", first_uv_text_h, other_uv_text_h, hour_label_text_h);
+        Serial.printf("Font Heights: UV1(F%d)=%d, UV_other(F%d)=%d, HourLabel(F%d)=%d\n", first_uv_val_font, first_uv_text_h, other_uv_val_font, other_uv_text_h, hour_label_font, hour_label_text_h);
         Serial.printf("Y Pos: UV1_val_Y=%d, UV_other_Y=%d, HourLabel_Y=%d\n", first_uv_value_y, other_uv_values_line_y, hour_label_y);
-        Serial.printf("Y Pos: GraphBaseline_Y=%d, BottomOfUVTexts_Y=%d\n", graph_baseline_y, bottom_of_uv_texts);
-        Serial.printf("MaxBarPixelHeight (raw): %d, (clamped): %d\n", graph_baseline_y - (bottom_of_uv_texts + padding), max_bar_pixel_height);
+        Serial.printf("Y Pos: GraphBaseline_Y=%d\n", graph_baseline_y);
+        Serial.printf("MaxBarPixelHeight (calc from baseline to start_y_offset+pad): %d\n", max_bar_pixel_height);
         Serial.printf("Bar Slot W: %d, Actual W: %d, Area Start X: %d\n", bar_slot_width, bar_actual_width, graph_area_x_start);
     }
     #endif
 
-    // --- Drawing Loop ---
+    // --- Drawing Loop (bar drawing, text drawing logic largely same, uses new Y coords) ---
     for (int i = 0; i < HOURLY_FORECAST_COUNT; ++i) {
         int bar_center_x = graph_area_x_start + (i * bar_slot_width) + (bar_slot_width / 2);
 
         // --- Draw Hour Label ---
         tft.setTextFont(hour_label_font);
-        tft.setTextColor(TFT_WHITE, TFT_BLACK); 
-        tft.setTextDatum(MC_DATUM); 
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextDatum(MC_DATUM);
         if (forecastHours[i] != -1) {
             tft.drawString(String(forecastHours[i]), bar_center_x, hour_label_y);
         } else {
-            tft.drawString("-", bar_center_x, hour_label_y); 
+            tft.drawString("-", bar_center_x, hour_label_y);
         }
 
         float uvVal = hourlyUV[i];
-        int roundedUV = (uvVal >= -0.01f) ? round(uvVal) : -1; 
+        int roundedUV = (uvVal >= -0.01f) ? round(uvVal) : -1;
 
         #if DEBUG_GRAPH_DRAWING
         Serial.printf("Bar %d: CenterX=%d, Hour=%d, UVRaw=%.2f, UVRounded=%d", i, bar_center_x, forecastHours[i], uvVal, roundedUV);
         #endif
 
-        if (roundedUV != -1 && forecastHours[i] != -1) { 
-            // --- Calculate Bar Height & Color (logic remains the same) ---
-            float max_uv_for_scaling = 12.0f; 
+        if (roundedUV != -1 && forecastHours[i] != -1) {
+            // Calculate Bar Height & Color
+            float max_uv_for_scaling = 12.0f;
             float uvValForBarScaling = (uvVal > max_uv_for_scaling) ? max_uv_for_scaling : ((uvVal < 0) ? 0 : uvVal);
             int bar_height = (int)((uvValForBarScaling / max_uv_for_scaling) * max_bar_pixel_height);
-
             if (bar_height < 0) bar_height = 0;
-            if (bar_height == 0 && uvVal >= 0 && uvVal < 0.5f) bar_height = 1; 
-            else if (bar_height < 2 && uvVal >= 0.5f) bar_height = 2;     
+            if (bar_height == 0 && uvVal >= 0 && uvVal < 0.5f) bar_height = 1;
+            else if (bar_height < 2 && uvVal >= 0.5f) bar_height = 2;
 
             int bar_top_y = graph_baseline_y - bar_height;
-            uint16_t barColor = (roundedUV < 1) ? TFT_DARKGREY :   
-                                ((roundedUV < 3) ? TFT_GREEN :     
-                                ((roundedUV < 6) ? TFT_YELLOW :    
-                                ((roundedUV < 8) ? TFT_ORANGE :    
-                                ((roundedUV < 11) ? TFT_RED :      
-                                TFT_VIOLET))));                    
+            uint16_t barColor = (roundedUV < 1) ? TFT_DARKGREY :
+                                ((roundedUV < 3) ? TFT_GREEN :
+                                ((roundedUV < 6) ? TFT_YELLOW :
+                                ((roundedUV < 8) ? TFT_ORANGE :
+                                ((roundedUV < 11) ? TFT_RED :
+                                TFT_VIOLET))));
 
             #if DEBUG_GRAPH_DRAWING
             Serial.printf(", BarH=%d, BarTopY=%d, BarColor=0x%X", bar_height, bar_top_y, barColor);
             #endif
 
-            if (bar_height > 0) { 
+            if (bar_height > 0) {
                 tft.fillRect(bar_center_x - bar_actual_width / 2, bar_top_y, bar_actual_width, bar_height, barColor);
             }
 
-            // --- Draw UV Value Text ---
-            // MODIFIED SECTION FOR TEXT COLOR:
-            tft.setTextColor(TFT_WHITE, TFT_BLACK); // Always White text on Black background box
-            // END OF MODIFIED SECTION
-
+            // Draw UV Value Text (Always White text on Black background box for visibility)
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
             tft.setTextDatum(MC_DATUM);
 
             int current_uv_text_y;
@@ -692,18 +698,25 @@ void drawForecastGraph(int start_y_offset) {
             tft.drawString(String(roundedUV), bar_center_x, current_uv_text_y);
 
             #if DEBUG_GRAPH_DRAWING
-            // We don't need to print uvTextColor anymore as it's fixed to WHITE
             Serial.printf(", UVTextY=%d (WhiteText)\n", current_uv_text_y);
             #endif
 
-        } else { 
-            // ... (placeholder drawing logic remains the same) ...
+        } else { // Placeholder for invalid data
+            int placeholder_y;
+            int placeholder_font;
+            if (i == 0) { placeholder_font = first_uv_val_font; placeholder_y = first_uv_value_y; }
+            else { placeholder_font = other_uv_val_font; placeholder_y = other_uv_values_line_y; }
+
+            tft.setTextFont(placeholder_font);
+            tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+            tft.setTextDatum(MC_DATUM);
+            tft.drawString("-", bar_center_x, placeholder_y);
             #if DEBUG_GRAPH_DRAWING
             Serial.println(", --> No valid UV/Hour data, drawing placeholders.");
             #endif
         }
     }
     #if DEBUG_GRAPH_DRAWING
-    Serial.println("--- End of Graph Draw Cycle ---");
+    Serial.println("--- End of Graph Draw Cycle (Glanceable) ---");
     #endif
 }
