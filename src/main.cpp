@@ -1,53 +1,65 @@
 #include <Arduino.h>
-#include <SPI.h>
-#include <TFT_eSPI.h> // Hardware-specific library
+#include <SPI.h>      // Required for TFT_eSPI
+#include <TFT_eSPI.h> // Include the TFT_eSPI library
 
 // Create an instance of the TFT_eSPI class
 TFT_eSPI tft = TFT_eSPI();
 
 void setup() {
-  Serial.begin(115200); // Initialize serial communication
-  Serial.println("Hello! TTGO T-Display Test");
+  Serial.begin(115200);
+  Serial.println("\nHello World! Diagnostic Test...");
 
-  // Initialize the TFT screen
   tft.init();
-  Serial.println("TFT Initialized");
+  Serial.println("TFT Initialized.");
 
-  // Set screen rotation (0, 1, 2, or 3)
-  // 0 & 2 are portrait, 1 & 3 are landscape
-  // For TTGO T-Display, 1 (landscape) often works well with USB port down.
-  // Or 3 (landscape) with USB port up.
-  tft.setRotation(1); 
-  Serial.println("Rotation Set");
+  // Set rotation (e.g., 0 for portrait, 1 for landscape)
+  // The tft.width() and tft.height() will change based on this.
+  tft.setRotation(0); // << Try 0 first. Then maybe 1, 2, 3 to see if behavior changes.
+  Serial.print("Screen rotation set to: "); Serial.println(tft.getRotation());
 
-  // Fill the screen with a black color
-  tft.fillScreen(TFT_BLACK);
-  Serial.println("Screen Filled Black");
+  // --- Diagnostic Prints ---
+  // These will tell us what dimensions the library *thinks* the screen has.
+  int configured_width = tft.width();
+  int configured_height = tft.height();
+  Serial.print("TFT configured width: "); Serial.println(configured_width);
+  Serial.print("TFT configured height: "); Serial.println(configured_height);
 
-  // Set text color to white and background to black
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  
-  // Set text datum to Middle Center (MC_DATUM)
-  // This means the coordinates (x,y) for tft.drawString will be the center of the text
-  tft.setTextDatum(MC_DATUM);
+  // --- Visual Boundary Test ---
+  // Fill the screen with a color. Does this color fill your *entire physical screen*?
+  tft.fillScreen(TFT_BLUE); // Use a bright color like BLUE or RED
+  Serial.println("Screen filled with BLUE. Check if it covers the entire physical display.");
+  delay(2000); // Pause for 2 seconds to observe the fill
 
-  // Set the font (default is fine, or choose another loaded font)
-  tft.setTextFont(4); // Font 4 is a nice medium size
+  // Draw a border at the edges of the configured area
+  // If this border is smaller than your physical screen, the configured dimensions are too small.
+  tft.drawRect(0, 0, configured_width, configured_height, TFT_WHITE);
+  Serial.println("White rectangle drawn at configured boundaries (0,0 to width-1, height-1).");
+  delay(2000); // Pause
 
-  // Print "Hello World!" in the center of the screen
-  // tft.width() and tft.height() give the dimensions of the screen
-  tft.drawString("Hello World!", tft.width() / 2, tft.height() / 2);
-  Serial.println("Text Drawn");
+  // Draw some lines to further check boundaries
+  tft.drawLine(0,0, configured_width -1, configured_height -1, TFT_GREEN); // Top-left to bottom-right
+  tft.drawLine(configured_width -1, 0, 0, configured_height -1, TFT_RED);   // Top-right to bottom-left
+  delay(2000);
 
-  // Optional: Turn on the backlight if it's controlled by TFT_BL and not always on
-  // For TTGO T-Display, the backlight pin (GPIO 4) is usually controlled by the library
-  // If you have issues, you might need to manually control it:
-  // pinMode(TFT_BL, OUTPUT);
-  // digitalWrite(TFT_BL, HIGH); // Turn backlight on
+
+  // --- Display "Hello World!" ---
+  tft.setTextColor(TFT_YELLOW, TFT_BLUE); // Yellow text on the blue background
+  tft.setTextDatum(MC_DATUM); // Middle Center datum
+  tft.setTextFont(4);         // Font 4
+
+  // Display "Hello World!" in the center of the *configured* screen area
+  tft.drawString("Hello World!", configured_width / 2, configured_height / 2);
+  Serial.println("'Hello World!' drawn.");
+
+  // Also print the dimensions on screen
+  tft.setTextFont(2);
+  tft.setTextColor(TFT_WHITE, TFT_BLUE);
+  String dims = String(configured_width) + "x" + String(configured_height);
+  tft.drawString(dims, configured_width / 2, configured_height / 2 + 30); // Below "Hello World"
+
+  Serial.println("Setup complete. Observe the display.");
 }
 
 void loop() {
-  // Keep the display showing the message.
-  // You can add other code here to update the display later.
-  delay(1000); // Delay to prevent the loop from running too fast (optional)
+  delay(1000);
 }
