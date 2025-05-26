@@ -387,17 +387,16 @@ bool fetchUVData() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi not connected, cannot fetch UV data.");
     initializeForecastData(); // Set data to invalid
-    lastUpdateTimeStr = "Offline"; // Or use specific error for update time
+    lastUpdateTimeStr = "Offline"; 
     dataJustUpdated = true;   // Signal display needs to be updated with this state
     return false;
   }
 
   HTTPClient http;
-  // Using String concatenation for URL construction
   String apiUrl = openMeteoUrl +
-                  "?latitude=" + String(deviceLatitude, 4) + // Use 4 decimal places for lat/lon
+                  "?latitude=" + String(deviceLatitude, 4) + 
                   "&longitude=" + String(deviceLongitude, 4) +
-                  "&hourly=uv_index&forecast_days=1&timezone=auto";
+                  "&hourly=uv_index&forecast_days=1&timezone=auto"; // timezone=auto is key
 
   Serial.println("----------------------------------------");
   Serial.print("Fetching UV Data from URL: "); Serial.println(apiUrl);
@@ -406,44 +405,67 @@ bool fetchUVData() {
   int httpCode = http.GET();
   Serial.print("Open-Meteo API HTTP Code: "); Serial.println(httpCode);
 
-  bool success = false;
+  bool success = false; // Flag to indicate if UV data was successfully parsed and populated
   if (httpCode == HTTP_CODE_OK) { // Successful request
     String payload = http.getString();
-    Serial.println("JSON Payload received:");
-    // Serial.println(payload); // Uncomment for full payload debugging, can be very long
+    // Serial.println("JSON Payload received:"); // Uncomment for full payload debugging
+    // Serial.println(payload);
     Serial.println("----------------------------------------");
 
     JsonDocument doc; // For ArduinoJson v6+
-                      // Adjust size if payload is very large and causes issues: StaticJsonDocument<2048> doc;
     DeserializationError error = deserializeJson(doc, payload);
+
     if (error) {
       Serial.print(F("deserializeJson() for UV data failed: ")); Serial.println(error.c_str());
       initializeForecastData();
     } else {
+      // --- Timezone Update from API Data ---
+      if (doc.containsKey("utc_offset_seconds")) {
+        long api_utc_offset_sec = doc["utc_offset_seconds"].as<long>();
+        const char* api_timezone_id = doc["timezone"].as<const char*>(); // e.g., "America/Chicago"
+        const char* api_timezone_abbr = doc["timezone_abbreviation"].as<const char*>(); // e.g., "CDT"
+        
+        Serial.printf("Open-Meteo API reports: UTC Offset %lds, TZ ID: %s (%s)\n", 
+                      api_utc_offset_sec, 
+                      api_timezone_id ? api_timezone_id : "N/A",
+                      api_timezone_abbr ? api_timezone_abbr : "N/A");
+
+        // Reconfigure ESP32's time using the offset from the API.
+        // The second argument (daylightOffset_sec) to configTime is 0 because 
+        // api_utc_offset_sec IS the total current offset from UTC, already including any DST.
+        configTime(api_utc_offset_sec, 0, "pool.ntp.org", "time.nist.gov");
+        Serial.println("ESP32 local time reconfigured using Open-Meteo offset.");
+        
+        // Allow a moment for the new time configuration to apply before fetching local time.
+        // A small delay can sometimes help, though getLocalTime also has a timeout.
+        delay(100); 
+
+      } else {
+        Serial.println("Open-Meteo API response did not include 'utc_offset_seconds'. Using existing ESP32 time settings.");
+      }
+      // --- End of Timezone Update ---
+
+      // Now, proceed to get the (potentially updated) local time for forecast matching
       if (doc.containsKey("hourly") && doc["hourly"].containsKey("time") && doc["hourly"].containsKey("uv_index")) {
         JsonArray hourly_time_list = doc["hourly"]["time"].as<JsonArray>();
         JsonArray hourly_uv_list = doc["hourly"]["uv_index"].as<JsonArray>();
-        struct tm timeinfo;
+        struct tm timeinfo; // To store the ESP32's local time
 
-        if (!getLocalTime(&timeinfo, 5000)) { // Attempt to get ESP32's configured local time
+        if (!getLocalTime(&timeinfo, 5000)) { // 5-second timeout to get local time
             Serial.println("Failed to obtain ESP32 local time for forecast matching. UV data might be misaligned.");
             initializeForecastData(); // Cannot reliably match forecast
         } else {
-            int currentHourLocal = timeinfo.tm_hour; // ESP32's current local hour
-            char timeBuff[60]; // Increased buffer size for full date-time string
+            int currentHourLocal = timeinfo.tm_hour; // ESP32's current local hour (now reflecting API's location timezone)
+            char timeBuff[60]; 
             strftime(timeBuff, sizeof(timeBuff), "%Y-%m-%d %H:%M:%S (%A)", &timeinfo);
-            Serial.printf("ESP32 Current Local Time for matching: %s (Hour: %02d)\n", timeBuff, currentHourLocal);
+            Serial.printf("ESP32 Current Local Time for matching (post API TZ sync): %s (Hour: %02d)\n", timeBuff, currentHourLocal);
 
             int startIndex = -1;
-            Serial.println("API Hourly Times (should be local to GPS due to timezone=auto):");
+            // Serial.println("API Hourly Times (should be local to GPS due to timezone=auto):"); // Verbose
             for (int i = 0; i < hourly_time_list.size(); ++i) {
                 String api_time_str = hourly_time_list[i].as<String>(); // e.g., "2023-05-15T14:00"
-                // Serial.print("  API slot "); Serial.print(i); Serial.print(": "); Serial.println(api_time_str); // Verbose
                 if (api_time_str.length() >= 13) { // Ensure "TXX:XX" part exists
-                    // Extract hour from "YYYY-MM-DDTHH:MM"
                     int api_hour = api_time_str.substring(11, 13).toInt();
-                    // We are looking for the first API hour that is >= ESP32's current local hour
-                    // This simple match assumes the API provides data for the current day starting before or at currentHourLocal
                     if (api_hour >= currentHourLocal) {
                         startIndex = i;
                         Serial.printf(">>> Match Found: Forecast startIndex = %d (API hour %02d >= ESP32 local hour %02d)\n", startIndex, api_hour, currentHourLocal);
@@ -456,9 +478,9 @@ bool fetchUVData() {
                 for (int i = 0; i < HOURLY_FORECAST_COUNT; ++i) {
                     if (startIndex + i < hourly_uv_list.size() && startIndex + i < hourly_time_list.size()) {
                         JsonVariant uv_val_variant = hourly_uv_list[startIndex + i];
-                        if (uv_val_variant.isNull()) { // Handle null UV values from API
-                            hourlyUV[i] = 0.0f; // Or some other indicator like -1.0f if you prefer
-                            Serial.printf("  Populating Forecast slot %d: API returned null UV, defaulting to 0.0\n", i);
+                        if (uv_val_variant.isNull()) { 
+                            hourlyUV[i] = 0.0f; // Default for null UV values
+                            // Serial.printf("  Populating Forecast slot %d: API returned null UV, defaulting to 0.0\n", i);
                         } else {
                            hourlyUV[i] = uv_val_variant.as<float>();
                         }
@@ -466,45 +488,48 @@ bool fetchUVData() {
 
                         String api_t_str = hourly_time_list[startIndex + i].as<String>();
                         forecastHours[i] = api_t_str.substring(11, 13).toInt();
-                        Serial.printf("  Populating Forecast slot %d: Hour %02d, UV %.1f\n", i, forecastHours[i], hourlyUV[i]);
+                        // Serial.printf("  Populating Forecast slot %d: Hour %02d, UV %.1f\n", i, forecastHours[i], hourlyUV[i]); // Verbose
                     } else {
-                        hourlyUV[i] = -1.0f; forecastHours[i] = -1; // Mark as invalid if not enough data
-                        Serial.printf("  Populating Forecast slot %d: Not enough data from API at index %d\n", i, startIndex + i);
+                        hourlyUV[i] = -1.0f; forecastHours[i] = -1; // Mark as invalid
+                        // Serial.printf("  Populating Forecast slot %d: Not enough data from API at index %d\n", i, startIndex + i); // Verbose
                     }
                 }
-                success = true; // Data populated
+                success = true; // UV Data successfully parsed and populated
+                Serial.println("Successfully populated hourly forecast data.");
             } else {
-                Serial.println(">>> No suitable starting index found in hourly forecast data for the ESP32's current local hour. API data might be for a future period or past.");
-                initializeForecastData(); // Couldn't align data
+                Serial.println(">>> No suitable starting index found in API's hourly forecast for the ESP32's current local hour.");
+                initializeForecastData(); 
             }
         }
       } else {
-        Serial.println("Hourly UV data structure not found in JSON. Check API response format ('hourly', 'time', 'uv_index' keys).");
+        Serial.println("Hourly UV data structure ('hourly', 'time', 'uv_index') not found in JSON response.");
         initializeForecastData();
       }
     }
-    // Update the "Last Updated" time string
+    // Update the "Last Updated" time string using the (potentially new) local time
     struct tm timeinfo_update;
     if(getLocalTime(&timeinfo_update, 1000)){ // Quick attempt to get time
       char timeStr[10];
       strftime(timeStr, sizeof(timeStr), "%H:%M", &timeinfo_update);
       lastUpdateTimeStr = String(timeStr);
+      Serial.print("Refreshed 'lastUpdateTimeStr' to: "); Serial.println(lastUpdateTimeStr);
     } else {
-      // If getLocalTime fails here, lastUpdateTimeStr retains its previous value or "Time N/A" from connectToWiFi
-      Serial.println("Could not get local time to update 'lastUpdateTimeStr' after data fetch.");
+      Serial.println("Could not get local time to update 'lastUpdateTimeStr' after data fetch attempt.");
+      // lastUpdateTimeStr might retain its previous value or an error state like "Time N/A"
     }
-  } else {
+  } else { // httpCode was not HTTP_CODE_OK
     Serial.print("Error on HTTP request to Open-Meteo. HTTP Code: "); Serial.println(httpCode);
-    if (httpCode == HTTP_CODE_NOT_FOUND) Serial.println("Check API URL and parameters. Resource not found (404).");
-    else if (httpCode == HTTP_CODE_BAD_REQUEST) Serial.println("Bad request (400). Check API parameters like lat/lon format or range.");
-    else if (httpCode > 0) Serial.printf("HTTP Error %d: %s\n", httpCode, http.errorToString(httpCode).c_str());
-    else Serial.printf("HTTP Request failed. Error: %s\n", http.errorToString(httpCode).c_str()); // e.g. timeout, DNS resolution failed
-
+    if (httpCode > 0) Serial.printf("  Error details: %s\n", http.errorToString(httpCode).c_str());
+    else Serial.printf("  Error details: %s (likely network issue or timeout)\n", http.errorToString(httpCode).c_str());
+    
     initializeForecastData(); // Clear data on error
+    // lastUpdateTimeStr might be set to "Offline" or retain previous value depending on WiFi status
+    if (WiFi.status() != WL_CONNECTED) lastUpdateTimeStr = "Offline";
   }
+  
   http.end();
-  dataJustUpdated = true; // Signal that display needs to be updated with new data or error state
-  return success;
+  dataJustUpdated = true; // Signal that display needs to be updated with new data or current error state
+  return success; 
 }
 
 void displayInfo() {
