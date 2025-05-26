@@ -89,16 +89,49 @@ void setup() {
 // --- Main Loop ---
 void loop() {
   handleButtonPress();    // For info overlay
-  handleModeButton();     // For location mode toggle
+  handleModeButton();     // For location mode toggle, can set dataJustUpdated = true
 
-  // ... (rest of your existing loop logic for fetching data and display updates) ...
-  // Ensure dataJustUpdated or force_display_update trigger displayInfo()
+  unsigned long currentMillis = millis();
+
+  // Check if it's time to update data (either by interval or by mode change)
+  // The 'dataJustUpdated' flag from handleModeButton signals an immediate need to fetch.
+  if (dataJustUpdated || (currentMillis - lastUpdateTime >= UPDATE_INTERVAL_MS)) {
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("Condition met for fetching new UV data.");
+      displayMessage("Updating UV data...", locationDisplayStr, TFT_CYAN); // Show what we are doing
+
+      bool fetchSuccess = fetchUVData(); // This function sets its own dataJustUpdated to true on success/failure
+
+      if (fetchSuccess) {
+        lastUpdateTime = currentMillis; // Update timestamp only on successful fetch
+        Serial.println("UV Data fetch successful.");
+      } else {
+        Serial.println("UV Data fetch failed. Displaying stale or placeholder data.");
+        // If fetch fails, we might want to revert lastUpdateTime so it tries sooner,
+        // or rely on dataJustUpdated being set by fetchUVData to show placeholders.
+        // For now, displayInfo() will be called anyway.
+      }
+    } else {
+      Serial.println("No WiFi connection. Cannot fetch UV data.");
+      initializeForecastData();    // Clear out old data
+      lastUpdateTimeStr = "Never"; // Update time string
+      // We need to ensure the display reflects this state.
+      // fetchUVData() already sets dataJustUpdated if WiFi is down,
+      // but if we don't call it, set it here.
+      dataJustUpdated = true;
+    }
+    // After attempting a fetch (or deciding not to due to WiFi),
+    // dataJustUpdated should be true if new data was processed or if an error state needs displaying.
+    // force_display_update is also useful if only the overlay changed.
+  }
+
+  // Display updates if forced or if new data has been processed
   if (force_display_update || dataJustUpdated) {
     displayInfo();
-    force_display_update = false;
-    dataJustUpdated = false; 
+    force_display_update = false; // Reset flag after display
+    dataJustUpdated = false;    // Reset flag after display
   }
-  delay(50); 
+  delay(50);
 }
 
 
