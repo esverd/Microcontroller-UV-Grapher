@@ -23,12 +23,26 @@ int forecastHours[HOURLY_FORECAST_COUNT];
 
 // Button and Display State
 #define BUTTON_INFO_PIN 0 
+#define BUTTON_MODE_PIN 35 // New button for location mode
 bool showInfoOverlay = false;
-uint32_t button_last_press_time = 0;
-bool button_last_state = HIGH; 
+uint32_t button_info_last_press_time = 0;
+bool button_info_last_state = HIGH; 
+
+// Location Mode Button State
+uint32_t button_mode_hold_start_time = 0;
+bool button_mode_last_state = HIGH;
+bool button_mode_is_held = false;
+const uint16_t MODE_BUTTON_HOLD_TIME_MS = 1000; // 1 second hold to toggle
+
 const uint16_t DEBOUNCE_TIME_MS = 70; 
 bool force_display_update = true; 
 bool dataJustUpdated = false; 
+
+// Location Management
+bool useGpsFromSecrets = true; // True = use secrets.h, False = use IP Geolocation
+float deviceLatitude = MY_LATITUDE;   // Initialize with secrets, will be updated
+float deviceLongitude = MY_LONGITUDE; // Initialize with secrets, will be updated
+String locationDisplayStr = "Secrets"; // To show on info overlay
 
 // --- Function Declarations ---
 void connectToWiFi();
@@ -38,6 +52,8 @@ void drawForecastGraph(int start_y_offset);
 void displayMessage(String msg_line1, String msg_line2 = "", int color = TFT_WHITE);
 void initializeForecastData();
 void handleButtonPress();
+void handleModeButton();
+bool fetchLocationFromIp();
 
 // --- Setup ---
 void setup() {
@@ -45,6 +61,11 @@ void setup() {
   Serial.println("\nUV Index Monitor (Layout V3.1 - Fixes) Starting...");
 
   pinMode(BUTTON_INFO_PIN, INPUT_PULLUP); 
+  pinMode(BUTTON_MODE_PIN, INPUT_PULLUP); // Initialize mode button pin
+
+  deviceLatitude = MY_LATITUDE;   // Ensure initial values are from secrets
+  deviceLongitude = MY_LONGITUDE;
+  locationDisplayStr = "Secrets GPS";
 
   initializeForecastData();
 
@@ -67,47 +88,79 @@ void setup() {
 
 // --- Main Loop ---
 void loop() {
-  handleButtonPress();
+  handleButtonPress();    // For info overlay
+  handleModeButton();     // For location mode toggle
 
-  if (millis() - lastUpdateTime >= UPDATE_INTERVAL_MS) {
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("Time to update UV data...");
-      if(fetchUVData()) { 
-        lastUpdateTime = millis();
-      }
-    } else {
-      Serial.println("Cannot update UV data, WiFi not connected.");
-      force_display_update = true; 
-    }
-  }
-
+  // ... (rest of your existing loop logic for fetching data and display updates) ...
+  // Ensure dataJustUpdated or force_display_update trigger displayInfo()
   if (force_display_update || dataJustUpdated) {
     displayInfo();
     force_display_update = false;
     dataJustUpdated = false; 
   }
-  
   delay(50); 
 }
 
-// --- Button Handling ---
-void handleButtonPress() {
-    bool current_button_state = digitalRead(BUTTON_INFO_PIN);
-    // Edge detection for press (HIGH to LOW transition)
-    if (current_button_state == LOW && button_last_state == HIGH && (millis() - button_last_press_time > DEBOUNCE_TIME_MS)) {
-        showInfoOverlay = !showInfoOverlay;
-        button_last_press_time = millis(); // Record time of this press
-        force_display_update = true; 
-        Serial.printf("Button pressed, showInfoOverlay: %s\n", showInfoOverlay ? "true" : "false");
-    }
-    button_last_state = current_button_state;
 
-    // Prevents continuous toggling if button is held down after the initial press
-    if (current_button_state == LOW && (millis() - button_last_press_time > 500) && showInfoOverlay) {
-         // If button is still held LOW long after the press that turned overlay ON,
-         // you might want to do nothing or reset button_last_press_time to prevent quick re-toggle on release.
-         // For now, the DEBOUNCE_TIME_MS on press should handle most cases.
+// --- Button Handling ---
+void handleModeButton() {
+    bool current_mode_button_state = digitalRead(BUTTON_MODE_PIN);
+
+    if (current_mode_button_state == LOW && button_mode_last_state == HIGH) { // Button just pressed
+        button_mode_hold_start_time = millis();
+        button_mode_is_held = false; // Reset held flag
+    } else if (current_mode_button_state == LOW && !button_mode_is_held) { // Button is being held
+        if (millis() - button_mode_hold_start_time > MODE_BUTTON_HOLD_TIME_MS) {
+            // --- Long Press Detected ---
+            useGpsFromSecrets = !useGpsFromSecrets;
+            button_mode_is_held = true; // Mark as held so it doesn't re-trigger
+            force_display_update = true; // Force a screen update
+            dataJustUpdated = true;      // Force a weather data re-fetch
+
+            if (useGpsFromSecrets) {
+                Serial.println("Location Mode: Switched to GPS from secrets.h");
+                deviceLatitude = MY_LATITUDE;
+                deviceLongitude = MY_LONGITUDE;
+                locationDisplayStr = "Secrets GPS";
+                // No need to fetch IP if we switched TO secrets
+            } else {
+                Serial.println("Location Mode: Switched to IP Geolocation. Fetching IP location...");
+                locationDisplayStr = "IP Geo..."; // Temporary display
+                displayInfo(); // Show "IP Geo..." immediately
+                if (fetchLocationFromIp()) { // This function will update deviceLatitude/Longitude
+                    Serial.println("IP Geolocation successful.");
+                    // locationDisplayStr is updated inside fetchLocationFromIp on success
+                } else {
+                    Serial.println("IP Geolocation failed. Reverting to Secrets GPS.");
+                    useGpsFromSecrets = true; // Revert on failure
+                    deviceLatitude = MY_LATITUDE;
+                    deviceLongitude = MY_LONGITUDE;
+                    locationDisplayStr = "IP Fail>GPS";
+                }
+            }
+            // After mode change, new weather data will be fetched because dataJustUpdated is true
+        }
     }
+    button_mode_last_state = current_mode_button_state;
+}
+
+void handleButtonPress() {
+    // Read the current state of the INFO button
+    bool current_info_button_state = digitalRead(BUTTON_INFO_PIN);
+
+    // Check for a falling edge (button press: HIGH to LOW)
+    if (current_info_button_state == LOW && button_info_last_state == HIGH) {
+        // Check if enough time has passed since the last registered press (debounce)
+        if (millis() - button_info_last_press_time > DEBOUNCE_TIME_MS) {
+            showInfoOverlay = !showInfoOverlay;                // Toggle the overlay state
+            button_info_last_press_time = millis();            // Record the time of this valid press
+            force_display_update = true;                       // Signal that the display needs to be redrawn
+            Serial.printf("Info Button pressed, showInfoOverlay: %s\n", showInfoOverlay ? "true" : "false");
+        }
+    }
+
+    // Always update the last known state of the info button for the next loop iteration
+    button_info_last_state = current_info_button_state;
 }
 
 // --- Function Definitions ---
@@ -117,6 +170,61 @@ void initializeForecastData() {
         hourlyUV[i] = -1.0; 
         forecastHours[i] = -1;
     }
+}
+
+bool fetchLocationFromIp() {
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("Cannot fetch IP location: WiFi not connected.");
+        locationDisplayStr = "IP (NoNet)";
+        return false;
+    }
+
+    HTTPClient http;
+    // Using ip-api.com which is free but has usage limits (e.g. 45 req/min from same IP)
+    // For frequent use or commercial projects, consider their paid plans or other services.
+    String url = "http://ip-api.com/json/?fields=status,message,lat,lon,city";
+    Serial.print("Fetching IP Geolocation: "); Serial.println(url);
+
+    http.begin(url);
+    int httpCode = http.GET();
+    Serial.print("IP Geolocation HTTP Code: "); Serial.println(httpCode);
+
+    bool success = false;
+    if (httpCode > 0) {
+        String payload = http.getString();
+        Serial.println("IP Geolocation Payload: " + payload);
+
+        JsonDocument doc; // Auto-adjusts size, good for small payloads
+        DeserializationError error = deserializeJson(doc, payload);
+
+        if (error) {
+            Serial.print(F("deserializeJson() for IP Geo failed: ")); Serial.println(error.c_str());
+            locationDisplayStr = "IP (JSON Err)";
+        } else {
+            const char* status = doc["status"];
+            if (status && strcmp(status, "success") == 0) {
+                deviceLatitude = doc["lat"].as<float>();
+                deviceLongitude = doc["lon"].as<float>();
+                const char* city = doc["city"];
+                if (city) {
+                    locationDisplayStr = String("IP: ") + city;
+                } else {
+                    locationDisplayStr = "IP: Unknown";
+                }
+                Serial.printf("IP Geo Location: Lat=%.4f, Lon=%.4f, City=%s\n", deviceLatitude, deviceLongitude, city ? city : "N/A");
+                success = true;
+            } else {
+                const char* message = doc["message"];
+                Serial.print("IP Geolocation API Error: "); Serial.println(message ? message : "Unknown error");
+                locationDisplayStr = String("IP (API Err)");
+            }
+        }
+    } else {
+        Serial.print("IP Geolocation HTTP Error: "); Serial.println(httpCode);
+        locationDisplayStr = String("IP (HTTP Err)");
+    }
+    http.end();
+    return success;
 }
 
 void displayMessage(String msg_line1, String msg_line2, int color) {
@@ -187,8 +295,8 @@ bool fetchUVData() {
   }
 
   HTTPClient http;
-  String apiUrl = openMeteoUrl + "?latitude=" + String(MY_LATITUDE, 4) +
-                  "&longitude=" + String(MY_LONGITUDE, 4) +
+  String apiUrl = openMeteoUrl + "?latitude=" + String(deviceLatitude, 4) +
+                  "&longitude=" + String(deviceLongitude, 4) +
                   "&hourly=uv_index&forecast_days=1&timezone=auto"; 
   Serial.println("----------------------------------------");
   Serial.print("Fetching URL: "); Serial.println(apiUrl); // DEBUG: Print full URL
@@ -286,83 +394,99 @@ bool fetchUVData() {
 void displayInfo() {
   tft.fillScreen(TFT_BLACK); 
   int padding = 4; 
-  int top_y_offset = padding; 
+  int top_y_offset = padding; // Default top padding for graph if no overlay/warning
 
-  tft.setTextFont(2); 
-  int info_font_height = tft.fontHeight(2); // Font 2 height approx 16px
-  int top_row_text_y = padding + info_font_height / 2 + 2;
+  tft.setTextFont(2); // Font for info text
+  int info_font_height = tft.fontHeight(2); 
+  
+  // Declare top_row_text_y here so it's in scope for all branches below
+  // This is the Y-coordinate for the center of a single line of text at the top.
+  int base_top_text_line_y = padding + info_font_height / 2;
 
   if (showInfoOverlay) {
+    int current_info_y = base_top_text_line_y; // Start Y for the first line of info
+
+    // Line 1: WiFi and Update Time
     tft.setTextDatum(TL_DATUM);
     if (WiFi.status() == WL_CONNECTED) {
       tft.setTextColor(TFT_GREENYELLOW, TFT_BLACK);
       String ssid_str = WiFi.SSID();
       if (ssid_str.length() > 16) ssid_str = ssid_str.substring(0,13) + "...";
-      tft.drawString("WiFi: " + ssid_str, padding, top_row_text_y);
+      tft.drawString("WiFi: " + ssid_str, padding, current_info_y);
     } else {
       tft.setTextColor(TFT_RED, TFT_BLACK);
-      tft.drawString("WiFi: Offline", padding, top_row_text_y);
+      tft.drawString("WiFi: Offline", padding, current_info_y);
     }
     
     tft.setTextDatum(TR_DATUM); 
     tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    tft.drawString("Upd: " + lastUpdateTimeStr, tft.width() - padding, top_row_text_y);
-    top_y_offset = info_font_height + padding * 2 + 2; // Approx 16 + 8 + 2 = 26px
-  } else {
+    tft.drawString("Upd: " + lastUpdateTimeStr, tft.width() - padding, current_info_y);
+
+    // Move Y down for the second line of info (Location)
+    current_info_y += (info_font_height + padding); 
+
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(TFT_SKYBLUE, TFT_BLACK); 
+    String locText;
+    if (locationDisplayStr.startsWith("IP:")) { 
+        locText = locationDisplayStr; // Already formatted "IP: City" or "IP: Unknown"
+    } else if (locationDisplayStr.startsWith("Secrets")) {
+        locText = "Loc: " + String(deviceLatitude, 2) + ", " + String(deviceLongitude, 2);
+    } else { // Fallback or other statuses like "IP Fail>GPS"
+        locText = "Loc: " + locationDisplayStr;
+    }
+
+    if(locText.length() > 32) locText = locText.substring(0,29) + "..."; // Ensure it fits width
+    tft.drawString(locText, padding, current_info_y);
+    
+    // Calculate offset for graph to start below all info text
+    top_y_offset = current_info_y + info_font_height / 2 + padding; 
+
+  } else { // Overlay is OFF
     if (WiFi.status() != WL_CONNECTED) {
       tft.setTextDatum(MC_DATUM); 
       tft.setTextColor(TFT_RED, TFT_BLACK);
-      tft.drawString("! No WiFi Connection !", tft.width() / 2, top_row_text_y);
-      top_y_offset = info_font_height + padding * 2 + 2; 
+      // Use base_top_text_line_y for the single warning message
+      tft.drawString("! No WiFi Connection !", tft.width() / 2, base_top_text_line_y); 
+      // Calculate offset for graph to start below the warning
+      top_y_offset = base_top_text_line_y + info_font_height / 2 + padding; 
     }
-    // If overlay is off AND WiFi is connected, top_y_offset remains `padding` (e.g. 4px).
-    else {
-      // If overlay is off AND WiFi is connected, graph can start very near the top
-      top_y_offset = padding; // Minimal top padding, graph starts almost immediately
-    }
+    // If overlay is off AND WiFi is connected, top_y_offset remains its initial value (`padding`),
+    // allowing the graph to use almost the full screen height.
   }
   drawForecastGraph(top_y_offset); 
 }
 
 void drawForecastGraph(int start_y_offset) {
-    int padding = 2; // Screen edge padding
+    int padding = 2; 
 
     // --- Font Size Definitions ---
     int first_uv_val_font = 6;   // Prominent font for the first (leftmost) UV value
-    int other_uv_val_font = 4;   // Larger font for the next 5 UV values
-    int hour_label_font = 2;     // Readable font for all hour labels below bars
+    int other_uv_val_font = 2;   // Reverted to Font 2 for reliability for the next 5 UV values
+    int hour_label_font = 2;     // Font for all hour labels below bars
 
-    // --- Calculate Text Heights (crucial for precise layout) ---
+    // --- Calculate Text Heights ---
     tft.setTextFont(first_uv_val_font);
     int first_uv_text_h = tft.fontHeight();
-
     tft.setTextFont(other_uv_val_font);
     int other_uv_text_h = tft.fontHeight();
-
     tft.setTextFont(hour_label_font);
     int hour_label_text_h = tft.fontHeight();
 
-    // --- Y-Position Calculations for Graph Elements ---
-    // Y for the large, first UV value (broken out, near the top of graph area)
+    // --- Y-Position Calculations ---
     int first_uv_value_y = start_y_offset + padding + first_uv_text_h / 2;
-
-    // Y for the line of the other 5 UV values (positioned below the first large one)
     int other_uv_values_line_y = first_uv_value_y + first_uv_text_h / 2 + padding + other_uv_text_h / 2;
     if (HOURLY_FORECAST_COUNT <= 1) { 
         other_uv_values_line_y = first_uv_value_y; 
     }
 
-    // Hour labels are at the very bottom.
     int hour_label_y = tft.height() - padding - hour_label_text_h / 2;
-
-    // Baseline for the bars.
     int graph_baseline_y = hour_label_y - hour_label_text_h / 2 - padding;
-
-    // Max bar height calculation.
+    
     int bottom_of_uv_texts = (HOURLY_FORECAST_COUNT > 1) ? (other_uv_values_line_y + other_uv_text_h / 2) : (first_uv_value_y + first_uv_text_h / 2);
     int max_bar_pixel_height = graph_baseline_y - (bottom_of_uv_texts + padding);
     
-    if (max_bar_pixel_height > tft.height() * 0.50) max_bar_pixel_height = tft.height() * 0.50; // Cap at 50% of screen height
+    if (max_bar_pixel_height > tft.height() * 0.55) max_bar_pixel_height = tft.height() * 0.55; 
     if (max_bar_pixel_height < 15) max_bar_pixel_height = 15; 
 
     // --- X-Position Calculations ---
@@ -370,19 +494,14 @@ void drawForecastGraph(int start_y_offset) {
     int bar_slot_width = graph_area_total_width / HOURLY_FORECAST_COUNT;
     int bar_actual_width = bar_slot_width * 0.80; 
     if (bar_actual_width < 5) bar_actual_width = 5;
-    // Calculate the starting X to center the entire block of bars
-    int graph_block_width = bar_slot_width * HOURLY_FORECAST_COUNT;
-    int graph_area_x_start = (tft.width() - graph_block_width) / 2;
+    int graph_area_x_start = (tft.width() - (bar_slot_width * HOURLY_FORECAST_COUNT)) / 2; // Center the block of bars
 
-
-    // --- Drawing Loop for Each Forecast Slot ---
+    // --- Drawing Loop ---
     for (int i = 0; i < HOURLY_FORECAST_COUNT; ++i) {
-        // Calculate center X for the current bar AND its associated text labels
         int bar_center_x = graph_area_x_start + (i * bar_slot_width) + (bar_slot_width / 2);
 
-        // --- Draw Hour Label ---
         tft.setTextFont(hour_label_font); 
-        tft.setTextColor(TFT_WHITE, TFT_BLACK); // Opaque background for clarity
+        tft.setTextColor(TFT_WHITE, TFT_BLACK); 
         tft.setTextDatum(MC_DATUM);
         if (forecastHours[i] != -1) {
             tft.drawString(String(forecastHours[i]), bar_center_x, hour_label_y);
@@ -390,72 +509,56 @@ void drawForecastGraph(int start_y_offset) {
             tft.drawString("-", bar_center_x, hour_label_y);
         }
 
-        // --- Prepare Bar and UV Value Data ---
         float uvVal = hourlyUV[i]; 
-        int roundedUV = -1;       
+        int roundedUV = (uvVal >= -0.01f) ? round(uvVal) : -1;       
 
-        if (uvVal >= -0.01f) { 
-            roundedUV = round(uvVal); 
-        }
+        // DEBUG: Print data for each bar slot
+        // Serial.printf("Draw Bar %d: Hour=%d, Raw UV=%.2f, Rounded UV=%d, ", i, forecastHours[i], uvVal, roundedUV);
 
-        // --- Draw Bar (if data is valid) ---
         if (roundedUV != -1 && forecastHours[i] != -1) { 
+            // ... (bar height and color calculation as before) ...
             float max_uv_for_scaling = 12.0f; 
-            float uvValForBarScaling;
-            if (uvVal > max_uv_for_scaling) uvValForBarScaling = max_uv_for_scaling;
-            else uvValForBarScaling = (uvVal < 0) ? 0 : uvVal; 
-            
+            float uvValForBarScaling = (uvVal > max_uv_for_scaling) ? max_uv_for_scaling : ((uvVal < 0) ? 0 : uvVal);
             int bar_height = (int)((uvValForBarScaling / max_uv_for_scaling) * max_bar_pixel_height);
             if (bar_height < 0) bar_height = 0;
             if (bar_height == 0 && roundedUV == 0 && uvVal >= 0) bar_height = 1; 
             else if (bar_height == 0 && roundedUV > 0) bar_height = 2;
-
-
             int bar_top_y = graph_baseline_y - bar_height;
-
-            uint16_t barColor = TFT_DARKGREY; 
-            if (roundedUV < 1) barColor = TFT_DARKGREY;
-            else if (roundedUV < 3) barColor = TFT_GREEN;  
-            else if (roundedUV < 6) barColor = TFT_YELLOW; 
-            else if (roundedUV < 8) barColor = TFT_ORANGE; 
-            else if (roundedUV < 11) barColor = TFT_RED;   
-            else barColor = TFT_VIOLET;                    
+            uint16_t barColor = (roundedUV < 1) ? TFT_DARKGREY : ((roundedUV < 3) ? TFT_GREEN : ((roundedUV < 6) ? TFT_YELLOW : ((roundedUV < 8) ? TFT_ORANGE : ((roundedUV < 11) ? TFT_RED : TFT_VIOLET))));
+            // Serial.printf("BarH=%d, BarColor=0x%X, ", bar_height, barColor);
 
             tft.fillRect(bar_center_x - bar_actual_width / 2, bar_top_y, bar_actual_width, bar_height, barColor);
 
-            // --- Draw UV Value Text ---
+            // --- Draw UV Value Text (KEY CHANGE: Using explicit background color for all numbers) ---
             uint16_t uvTextColor = TFT_WHITE;
-            uint16_t uvTextBgColor = TFT_BLACK; // Explicit black background for numbers
-
             if (barColor == TFT_YELLOW || barColor == TFT_ORANGE) {
                 uvTextColor = TFT_BLACK; 
             }
+            // Serial.printf("UVTextColor=0x%X\n", uvTextColor);
             
-            int current_uv_text_y;
+            tft.setTextDatum(MC_DATUM); // Ensure datum is set before each drawString
             if (i == 0) { 
-                tft.setTextFont(first_uv_val_font);
-                current_uv_text_y = first_uv_value_y;
+                tft.setTextFont(first_uv_val_font); // Font 6 for first value
+                tft.setTextColor(uvTextColor, TFT_BLACK); // Explicit black background
+                tft.drawString(String(roundedUV), bar_center_x, first_uv_value_y);
             } else { 
-                tft.setTextFont(other_uv_val_font);
-                current_uv_text_y = other_uv_values_line_y;
+                tft.setTextFont(other_uv_val_font); // Font 2 for other values
+                tft.setTextColor(uvTextColor, TFT_BLACK); // Explicit black background
+                tft.drawString(String(roundedUV), bar_center_x, other_uv_values_line_y);
             }
-            tft.setTextColor(uvTextColor, uvTextBgColor); // Set text color WITH OPAQUE BACKGROUND
-            tft.setTextDatum(MC_DATUM);
-            tft.drawString(String(roundedUV), bar_center_x, current_uv_text_y);
             
         } else { 
-            // No valid data, draw placeholders for UV value text
+            // Serial.println("--> No valid UV/Hour data for this slot, drawing placeholders.");
             int placeholder_y;
-            if (i == 0) {
-                tft.setTextFont(first_uv_val_font);
-                placeholder_y = first_uv_value_y;
-            } else {
-                tft.setTextFont(other_uv_val_font);
-                placeholder_y = other_uv_values_line_y;
-            }
-            tft.setTextColor(TFT_DARKGREY, TFT_BLACK); // Opaque background
+            int placeholder_font;
+            if (i == 0) { placeholder_font = first_uv_val_font; placeholder_y = first_uv_value_y; }
+            else { placeholder_font = other_uv_val_font; placeholder_y = other_uv_values_line_y; }
+            
+            tft.setTextFont(placeholder_font);
+            tft.setTextColor(TFT_DARKGREY, TFT_BLACK); 
             tft.setTextDatum(MC_DATUM);
             tft.drawString("-", bar_center_x, placeholder_y); 
         }
     }
+    // Serial.println("--- End of Graph Draw Cycle ---");
 }
