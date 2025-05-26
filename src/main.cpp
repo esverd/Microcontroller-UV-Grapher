@@ -2,6 +2,8 @@
 #include <SPI.h>      // Required for TFT_eSPI
 #include <TFT_eSPI.h> // Include the TFT_eSPI library
 
+#include "secrets.h" // For WiFi credentials and other secrets
+
 // Create an instance of the TFT_eSPI class
 TFT_eSPI tft = TFT_eSPI();
 
@@ -14,7 +16,7 @@ void setup() {
 
   // Set rotation (e.g., 0 for portrait, 1 for landscape)
   // The tft.width() and tft.height() will change based on this.
-  tft.setRotation(0); // << Try 0 first. Then maybe 1, 2, 3 to see if behavior changes.
+  tft.setRotation(3); // << Try 0 first. Then maybe 1, 2, 3 to see if behavior changes.
   Serial.print("Screen rotation set to: "); Serial.println(tft.getRotation());
 
   // --- Diagnostic Prints ---
