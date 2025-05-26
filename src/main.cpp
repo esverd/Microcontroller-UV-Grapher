@@ -557,12 +557,12 @@ void displayInfo() {
 
 
 void drawForecastGraph(int start_y_offset) {
-    int padding = 2; 
+    int padding = 2;
 
     // --- Font Size Definitions ---
-    int first_uv_val_font = 6;   
-    int other_uv_val_font = 4;   // CHANGED for larger other UV values
-    int hour_label_font = 2;     
+    int first_uv_val_font = 6;
+    int other_uv_val_font = 4;
+    int hour_label_font = 2;
 
     // --- Calculate Text Heights ---
     tft.setTextFont(first_uv_val_font); int first_uv_text_h = tft.fontHeight();
@@ -571,35 +571,47 @@ void drawForecastGraph(int start_y_offset) {
 
     // --- Y-Position Calculations for "glanceable" layout ---
     int first_uv_value_y = start_y_offset + padding + first_uv_text_h / 2;
-    // Align other UV numbers' Y center with the first one's Y center for a single visual line
     int other_uv_values_line_y = first_uv_value_y + (first_uv_text_h / 2) - (other_uv_text_h / 2);
     if (HOURLY_FORECAST_COUNT <= 1) {
         other_uv_values_line_y = first_uv_value_y;
     }
-
     int hour_label_y = tft.height() - padding - hour_label_text_h / 2;
     int graph_baseline_y = hour_label_y - hour_label_text_h / 2 - padding;
+
+    // Max bar height: from baseline up to just below the start_y_offset
     int max_bar_pixel_height = graph_baseline_y - (start_y_offset + padding);
-    if (max_bar_pixel_height < 10) max_bar_pixel_height = 10; 
+    // Ensure at least 1px per UV unit up to the new MAX_UV_FOR_FULL_SCALE if space is very tight
+    if (max_bar_pixel_height < 10) max_bar_pixel_height = 10; // Changed from 8 to 10
+    if (max_bar_pixel_height < 20 && tft.height() > 100) max_bar_pixel_height = 20; // Min 2px per unit if MAX_UV is 10
+
+
+    // --- Calculate pixel chunk per UV unit for linear scaling ---
+    const float MAX_UV_FOR_FULL_SCALE = 10.0f; // CHANGED: UV 10 is now max height
+    float pixel_chunk_per_uv_unit = 0;
+    if (MAX_UV_FOR_FULL_SCALE > 0) {
+        pixel_chunk_per_uv_unit = max_bar_pixel_height / MAX_UV_FOR_FULL_SCALE;
+    }
+
 
     // --- X-Position Calculations ---
     int graph_area_total_width = tft.width() - 2 * padding;
     int bar_slot_width = graph_area_total_width / HOURLY_FORECAST_COUNT;
-    int bar_actual_width = bar_slot_width * 0.75; 
+    int bar_actual_width = bar_slot_width * 0.75;
     if (bar_actual_width < 4) bar_actual_width = 4;
-    if (bar_actual_width > 30) bar_actual_width = 30; 
+    if (bar_actual_width > 30) bar_actual_width = 30;
     int graph_area_x_start = (tft.width() - (bar_slot_width * HOURLY_FORECAST_COUNT)) / 2 + padding;
 
 
     #if DEBUG_GRAPH_DRAWING
-    if (true) { 
-        Serial.println("\n--- Graph Drawing Debug (Glanceable Layout) ---");
+    if (true) {
+        Serial.println("\n--- Graph Drawing Debug (Linear Chunked Scale UV10 Max) ---");
         Serial.printf("Screen H: %d, W: %d\n", tft.height(), tft.width());
         Serial.printf("start_y_offset: %d\n", start_y_offset);
         Serial.printf("Font Heights: UV1(F%d)=%d, UV_other(F%d)=%d, HourLabel(F%d)=%d\n", first_uv_val_font, first_uv_text_h, other_uv_val_font, other_uv_text_h, hour_label_font, hour_label_text_h);
         Serial.printf("Y Pos: UV1_val_Y=%d, UV_other_Y=%d, HourLabel_Y=%d\n", first_uv_value_y, other_uv_values_line_y, hour_label_y);
         Serial.printf("Y Pos: GraphBaseline_Y=%d\n", graph_baseline_y);
-        Serial.printf("MaxBarPixelHeight (calc from baseline to start_y_offset+pad): %d\n", max_bar_pixel_height);
+        Serial.printf("MaxBarPixelHeight (available for UV %.0f+): %d\n", MAX_UV_FOR_FULL_SCALE, max_bar_pixel_height);
+        Serial.printf("PixelChunkPerUVUnit: %.2f\n", pixel_chunk_per_uv_unit);
         Serial.printf("Bar Slot W: %d, Actual W: %d, Area Start X: %d\n", bar_slot_width, bar_actual_width, graph_area_x_start);
     }
     #endif
@@ -607,55 +619,74 @@ void drawForecastGraph(int start_y_offset) {
     for (int i = 0; i < HOURLY_FORECAST_COUNT; ++i) {
         int bar_center_x = graph_area_x_start + (i * bar_slot_width) + (bar_slot_width / 2);
 
+        // --- Draw Hour Label ---
         tft.setTextFont(hour_label_font);
-        tft.setTextColor(TFT_WHITE, TFT_BLACK); 
-        tft.setTextDatum(MC_DATUM); 
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextDatum(MC_DATUM);
         if (forecastHours[i] != -1) {
             tft.drawString(String(forecastHours[i]), bar_center_x, hour_label_y);
         } else {
-            tft.drawString("-", bar_center_x, hour_label_y); 
+            tft.drawString("-", bar_center_x, hour_label_y);
         }
 
-        float uvVal = hourlyUV[i];
-        int roundedUV = (uvVal >= -0.01f) ? round(uvVal) : -1; 
+        float uvVal = hourlyUV[i]; // Still needed for the original data
+        int roundedUV = (uvVal >= -0.01f) ? round(uvVal) : -1; // This is what we'll use for scaling and color
 
         #if DEBUG_GRAPH_DRAWING
         Serial.printf("Bar %d: CenterX=%d, Hour=%d, UVRaw=%.2f, UVRounded=%d", i, bar_center_x, forecastHours[i], uvVal, roundedUV);
         #endif
 
-        if (roundedUV != -1 && forecastHours[i] != -1) { 
-            float max_uv_for_scaling = 12.0f; 
-            float uvValForBarScaling = (uvVal > max_uv_for_scaling) ? max_uv_for_scaling : ((uvVal < 0) ? 0 : uvVal);
-            int bar_height = (int)((uvValForBarScaling / max_uv_for_scaling) * max_bar_pixel_height);
+        if (roundedUV != -1 && forecastHours[i] != -1) {
+            // --- Bar Height Calculation using roundedUV and chunks ---
+            float uv_for_height_calc = (float)roundedUV; // Use the integer roundedUV for scaling steps
+
+            if (uv_for_height_calc < 0) uv_for_height_calc = 0; // Should already be handled by roundedUV logic
+            if (uv_for_height_calc > MAX_UV_FOR_FULL_SCALE) {
+                uv_for_height_calc = MAX_UV_FOR_FULL_SCALE; // Cap at 10 for height calculation
+            }
+
+            int bar_height = round(uv_for_height_calc * pixel_chunk_per_uv_unit);
+
+            // Ensure minimum visibility for very low UV values if they would round to 0 pixels
+            // This check is based on the original float uvVal to catch true 0 vs small float
+            if (uvVal > 0 && uvVal < 0.5f && bar_height == 0) bar_height = 1; // Tiny bar for UV > 0 but < 0.5
+            // If roundedUV is 1 or more, ensure at least a small visible bar if chunks are very small
+            else if (roundedUV >= 1 && bar_height == 0 && pixel_chunk_per_uv_unit > 0) bar_height = 1; // Min 1px if roundedUV >=1 and calc is 0
+            else if (roundedUV >= 1 && bar_height < 2 && pixel_chunk_per_uv_unit > 2) bar_height = 2;
+
+
+            if (bar_height > max_bar_pixel_height) bar_height = max_bar_pixel_height; // Safety cap
             if (bar_height < 0) bar_height = 0;
-            if (bar_height == 0 && uvVal >= 0 && uvVal < 0.5f) bar_height = 1; 
-            else if (bar_height < 2 && uvVal >= 0.5f) bar_height = 2;     
+            // --- End of Bar Height Calculation ---
 
             int bar_top_y = graph_baseline_y - bar_height;
-            
-            // NEW UV COLOR SCALE
+
+            // YOUR LATEST UV COLOR SCALE
             uint16_t barColor;
             if (roundedUV < 1) {         // UV 0
                 barColor = TFT_DARKGREY;
             } else if (roundedUV <= 3) { // UV 1-3
                 barColor = TFT_GREEN;
             } else if (roundedUV <= 5) { // UV 4-5
-                barColor = TFT_YELLOW;    // "Light Yellow"
-            } else if (roundedUV <= 6) { // UV 6-7
-                barColor = TFT_DARK_ORANGE;    // "Orange (umber)"
+                barColor = TFT_YELLOW;
+            } else if (roundedUV <= 7) { // UV 6-7 (Condition changed to <= 7 based on common understanding)
+                                         // If you strictly meant only UV 6 for dark orange, change back to roundedUV <= 6
+                barColor = TFT_DARK_ORANGE; // Use your defined TFT_DARK_ORANGE or a hex value like 0xFC60
             } else {                     // UV 8+
                 barColor = TFT_RED;
             }
 
+
             #if DEBUG_GRAPH_DRAWING
-            Serial.printf(", BarH=%d, BarTopY=%d, BarColor=0x%X", bar_height, bar_top_y, barColor);
+            Serial.printf(", UVforH=%.1f, BarH=%d, BarTopY=%d, BarColor=0x%X", uv_for_height_calc, bar_height, bar_top_y, barColor);
             #endif
 
-            if (bar_height > 0) { 
+            if (bar_height > 0) {
                 tft.fillRect(bar_center_x - bar_actual_width / 2, bar_top_y, bar_actual_width, bar_height, barColor);
             }
 
-            tft.setTextColor(TFT_WHITE, TFT_BLACK); 
+            // --- Draw UV Value Text ---
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
             tft.setTextDatum(MC_DATUM);
 
             int current_uv_text_y;
@@ -666,20 +697,21 @@ void drawForecastGraph(int start_y_offset) {
                 tft.setTextFont(other_uv_val_font);
                 current_uv_text_y = other_uv_values_line_y;
             }
+            // Display the roundedUV value, as this is what the bar height and color are based on
             tft.drawString(String(roundedUV), bar_center_x, current_uv_text_y);
 
             #if DEBUG_GRAPH_DRAWING
             Serial.printf(", UVTextY=%d (WhiteText)\n", current_uv_text_y);
             #endif
 
-        } else { 
+        } else { // Placeholder for invalid data
             int placeholder_y;
             int placeholder_font;
             if (i == 0) { placeholder_font = first_uv_val_font; placeholder_y = first_uv_value_y; }
             else { placeholder_font = other_uv_val_font; placeholder_y = other_uv_values_line_y; }
 
             tft.setTextFont(placeholder_font);
-            tft.setTextColor(TFT_DARKGREY, TFT_BLACK); 
+            tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
             tft.setTextDatum(MC_DATUM);
             tft.drawString("-", bar_center_x, placeholder_y);
             #if DEBUG_GRAPH_DRAWING
@@ -688,6 +720,6 @@ void drawForecastGraph(int start_y_offset) {
         }
     }
     #if DEBUG_GRAPH_DRAWING
-    Serial.println("--- End of Graph Draw Cycle (Glanceable) ---");
+    Serial.println("--- End of Graph Draw Cycle (Linear Chunked Scale UV10 Max) ---");
     #endif
 }
