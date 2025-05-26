@@ -1,36 +1,18 @@
-// This header file contains a list of user setup files and defines which one the
-// compiler uses when the IDE performs a Verify/Compile or Upload.
-//
-// Users can create configurations for different boards and TFT displays.
-// This makes selecting between hardware setups easy by "uncommenting" one line.
+// File: YOUR_PROJECT_FOLDER/.pio/libdeps/esp32dev/TFT_eSPI/User_Setup_Select.h
 
-// The advantage of this hardware configuration method is that the examples provided
-// with the library should work with immediately without any other changes being
-// needed. It also improves the portability of users sketches to other hardware
-// configurations and compatible libraries.
-//
-// Create a shortcut to this file on your desktop to permit quick access for editing.
-// Re-compile and upload after making and saving any changes to this file.
+#ifndef USER_SETUP_SELECT_H
+#define USER_SETUP_SELECT_H
 
-// Example User_Setup files are stored in the "User_Setups" folder. These can be used
-// unmodified or adapted for a particular hardware configuration.
+// This line is the ONLY setup line that should be active (not commented out).
+// It tells the library to use all settings from Setup25_TTGO_T_Display.h,
+// which is specifically for your board (135x240, ST7789 driver, correct pins).
+#include <User_Setups/Setup25_TTGO_T_Display.h>
 
-#ifndef USER_SETUP_LOADED //  Lets PlatformIO users define settings in
-                          //  platformio.ini, see notes in "Tools" folder.
+// Make sure ALL other #include lines that point to other Setup files
+// (like #include <User_Setup.h> or #include <User_Setups/SetupX_XXXX.h>)
+// are either DELETED from this file or COMMENTED OUT.
 
-///////////////////////////////////////////////////////
-//   User configuration selection lines are below    //
-///////////////////////////////////////////////////////
-
-// Only ONE line below should be uncommented to define your setup.  Add extra lines and files as needed.
-
-#include <User_Setup.h>           // Default setup is root library folder
-
-#include <User_Setups/Setup25_TTGO_T_Display.h>    // Setup file for ESP32 and TTGO T-Display ST7789V SPI bus TFT
-
-
-#endif // USER_SETUP_LOADED
-
+#endif // USER_SETUP_SELECT_H
 
 
 /////////////////////////////////////////////////////////////////////////////////////
