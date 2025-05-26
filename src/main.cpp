@@ -181,56 +181,66 @@ void connectToWiFi() {
 bool fetchUVData() {
   if (WiFi.status() != WL_CONNECTED) { 
     Serial.println("WiFi not connected, cannot fetch UV data.");
-    initializeForecastData(); // Clear old forecast data
-    // currentUVIndex = -1.0; // If we were using it
-    dataJustUpdated = true; // Force display update to show potential "No WiFi" state
+    initializeForecastData(); 
+    dataJustUpdated = true; 
     return false; 
   }
 
   HTTPClient http;
   String apiUrl = openMeteoUrl + "?latitude=" + String(MY_LATITUDE, 4) +
                   "&longitude=" + String(MY_LONGITUDE, 4) +
-                  /*"&current=uv_index"*/ "&hourly=uv_index&forecast_days=1&timezone=auto"; // Removed current=uv_index as it's not displayed
-  Serial.print("Fetching URL: "); Serial.println(apiUrl);
+                  "&hourly=uv_index&forecast_days=1&timezone=auto"; 
+  Serial.println("----------------------------------------");
+  Serial.print("Fetching URL: "); Serial.println(apiUrl); // DEBUG: Print full URL
   http.begin(apiUrl);
   int httpCode = http.GET();
+  Serial.print("HTTP Code: "); Serial.println(httpCode); // DEBUG: Print HTTP status
 
   if (httpCode > 0) {
     String payload = http.getString();
-    Serial.println("HTTP Code: " + String(httpCode));
+    Serial.println("JSON Payload received:"); // DEBUG: Print full JSON payload
+    Serial.println(payload);                 // DEBUG
+    Serial.println("----------------------------------------");
+
 
     JsonDocument doc; 
     DeserializationError error = deserializeJson(doc, payload);
     if (error) { 
       Serial.print(F("deserializeJson() failed: ")); Serial.println(error.c_str());
       initializeForecastData(); http.end(); 
-      dataJustUpdated = true; // To update display with error state if needed
+      dataJustUpdated = true; 
       return false; 
     }
     
-    // Corrected condition:
     if (doc.containsKey("hourly") && doc["hourly"].containsKey("time") && doc["hourly"].containsKey("uv_index")) {
         JsonArray hourly_time_list = doc["hourly"]["time"].as<JsonArray>();
         JsonArray hourly_uv_list = doc["hourly"]["uv_index"].as<JsonArray>();
         struct tm timeinfo;
-        if (!getLocalTime(&timeinfo, 5000)) {
-            Serial.println("Failed to obtain local time for forecast matching.");
+        if (!getLocalTime(&timeinfo, 5000)) { // Attempt to get ESP32's local time
+            Serial.println("Failed to obtain ESP32 local time for forecast matching.");
             initializeForecastData();
         } else {
-            int currentHourLocal = timeinfo.tm_hour; 
-            Serial.printf("Current local hour for forecast matching: %02d\n", currentHourLocal);
+            int currentHourLocal = timeinfo.tm_hour; // ESP32's current local hour
+            char timeBuff[30];
+            strftime(timeBuff, sizeof(timeBuff), "%Y-%m-%d %H:%M:%S (%A)", &timeinfo);
+            Serial.printf("ESP32 Current Local Time for matching: %s (Hour: %02d)\n", timeBuff, currentHourLocal); // DEBUG
+
             int startIndex = -1;
+            Serial.println("API Hourly Times (should be local to GPS due to timezone=auto):"); // DEBUG
             for (int i = 0; i < hourly_time_list.size(); ++i) {
                 String api_time_str = hourly_time_list[i].as<String>(); 
+                Serial.print("  API slot "); Serial.print(i); Serial.print(": "); Serial.println(api_time_str); // DEBUG
                 if (api_time_str.length() >= 13) {
                     int api_hour = api_time_str.substring(11, 13).toInt();
-                    if (api_hour >= currentHourLocal) { // Assumes API times are now local due to timezone=auto
+                    // We are looking for the first API hour that is >= ESP32's current local hour
+                    if (api_hour >= currentHourLocal) { 
                         startIndex = i;
-                        Serial.printf("Found forecast starting at index %d, API hour %02d for local hour %02d\n", startIndex, api_hour, currentHourLocal);
-                        break;
+                        Serial.printf(">>> Match Found: Forecast startIndex = %d (API hour %02d >= ESP32 local hour %02d)\n", startIndex, api_hour, currentHourLocal); // DEBUG
+                        break; 
                     }
                 }
             }
+
             if (startIndex != -1) {
                 for (int i = 0; i < HOURLY_FORECAST_COUNT; ++i) {
                     if (startIndex + i < hourly_uv_list.size() && startIndex + i < hourly_time_list.size()) {
@@ -238,34 +248,37 @@ bool fetchUVData() {
                         if (hourlyUV[i] < 0) hourlyUV[i] = 0; 
                         String api_t_str = hourly_time_list[startIndex + i].as<String>();
                         forecastHours[i] = api_t_str.substring(11, 13).toInt();
-                        Serial.printf("Forecast slot %d: Hour %02d, UV %.1f\n", i, forecastHours[i], hourlyUV[i]);
+                        Serial.printf("  Populating Forecast slot %d: Hour %02d, UV %.1f\n", i, forecastHours[i], hourlyUV[i]); // DEBUG
                     } else {
                         hourlyUV[i] = -1.0; forecastHours[i] = -1;
-                        Serial.printf("Forecast slot %d: Not enough data\n", i);
+                        Serial.printf("  Populating Forecast slot %d: Not enough data\n", i); // DEBUG
                     }
                 }
             } else {
-                Serial.println("Could not find a suitable starting index in hourly forecast data for current local time.");
+                Serial.println(">>> No suitable starting index found in hourly forecast data for the ESP32's current local hour."); // DEBUG
                 initializeForecastData(); 
             }
         }
     } else {
-      Serial.println("Hourly UV data (or its 'time' or 'uv_index' arrays) not found in JSON response.");
+      Serial.println("Hourly UV data structure not found in JSON. Check 'hourly', 'time', 'uv_index' keys."); // DEBUG
       initializeForecastData(); 
     }
     struct tm timeinfo_update;
     if(getLocalTime(&timeinfo_update, 1000)){
       char timeStr[10]; 
-      strftime(timeStr, sizeof(timeStr), "%H:%M", &timeinfo_update); // 24-HOUR FORMAT
+      strftime(timeStr, sizeof(timeStr), "%H:%M", &timeinfo_update); 
       lastUpdateTimeStr = String(timeStr);
     }
     http.end();
     dataJustUpdated = true; 
     return true;
   } else {
-    Serial.print("Error on HTTP request: "); Serial.println(HTTPClient::errorToString(httpCode).c_str());
+    Serial.print("Error on HTTP request. HTTP Code: "); Serial.println(httpCode); // DEBUG
+    if (httpCode == HTTP_CODE_NOT_FOUND) Serial.println("Check API URL and parameters. Resource not found.");
+    else if (httpCode == HTTP_CODE_BAD_REQUEST) Serial.println("Bad request. Check API parameters like lat/lon format.");
+    // You can add more specific error messages for different HTTP codes.
     initializeForecastData(); http.end(); 
-    dataJustUpdated = true; // To update display with error state if needed
+    dataJustUpdated = true; 
     return false;
   }
 }
@@ -273,10 +286,10 @@ bool fetchUVData() {
 void displayInfo() {
   tft.fillScreen(TFT_BLACK); 
   int padding = 4; 
-  int top_y_offset = padding; // Default top padding for graph
+  int top_y_offset = padding; 
 
   tft.setTextFont(2); 
-  int info_font_height = tft.fontHeight(2);
+  int info_font_height = tft.fontHeight(2); // Font 2 height approx 16px
   int top_row_text_y = padding + info_font_height / 2 + 2;
 
   if (showInfoOverlay) {
@@ -284,7 +297,7 @@ void displayInfo() {
     if (WiFi.status() == WL_CONNECTED) {
       tft.setTextColor(TFT_GREENYELLOW, TFT_BLACK);
       String ssid_str = WiFi.SSID();
-      if (ssid_str.length() > 16) ssid_str = ssid_str.substring(0,13) + "..."; // Adjusted length slightly
+      if (ssid_str.length() > 16) ssid_str = ssid_str.substring(0,13) + "...";
       tft.drawString("WiFi: " + ssid_str, padding, top_row_text_y);
     } else {
       tft.setTextColor(TFT_RED, TFT_BLACK);
@@ -294,7 +307,7 @@ void displayInfo() {
     tft.setTextDatum(TR_DATUM); 
     tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
     tft.drawString("Upd: " + lastUpdateTimeStr, tft.width() - padding, top_row_text_y);
-    top_y_offset = info_font_height + padding * 2 + 2; 
+    top_y_offset = info_font_height + padding * 2 + 2; // Approx 16 + 8 + 2 = 26px
   } else {
     if (WiFi.status() != WL_CONNECTED) {
       tft.setTextDatum(MC_DATUM); 
@@ -302,43 +315,56 @@ void displayInfo() {
       tft.drawString("! No WiFi Connection !", tft.width() / 2, top_row_text_y);
       top_y_offset = info_font_height + padding * 2 + 2; 
     }
-    // If overlay is off AND WiFi is connected, top_y_offset remains `padding`.
+    // If overlay is off AND WiFi is connected, top_y_offset remains `padding` (e.g. 4px).
   }
   drawForecastGraph(top_y_offset); 
 }
 
 void drawForecastGraph(int start_y_offset) {
     int padding = 4;
-    int forecast_title_y = start_y_offset + tft.fontHeight(2)/2 + padding;
+    // REMOVED "UV Forecast" Title. Graph elements start directly from start_y_offset.
 
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextFont(2); 
-    tft.drawString("UV Forecast", tft.width() / 2, forecast_title_y);
-
-    int graph_area_x_start = padding + 5;
-    int graph_area_width = tft.width() - 2 * (padding + 5);
-    
-    int value_text_font = 1; // Font for UV values on bars
-    int hour_text_font = 1;  // Font for hour labels
-    tft.setTextFont(value_text_font); // Set font for height calculation
-    int value_text_height = tft.fontHeight(); 
+    int value_text_font = 1; 
+    int hour_text_font = 1;  
+    tft.setTextFont(value_text_font); 
+    int value_text_height = tft.fontHeight(); // Approx 8px for Font 1
     tft.setTextFont(hour_text_font);
-    int hour_text_height = tft.fontHeight();
+    int hour_text_height = tft.fontHeight(); // Approx 8px for Font 1
     
-    int uv_value_on_bar_y = forecast_title_y + tft.fontHeight(2)/2 + padding + value_text_height/2;
+    // Y position for the UV value text (above the bar)
+    // Make this the first element, fairly high up.
+    int uv_value_on_bar_y = start_y_offset + padding + value_text_height / 2;
     
     int max_bar_pixel_height = tft.height() - (uv_value_on_bar_y + value_text_height/2 + padding) - (hour_text_height + padding) - 5; 
-    if (max_bar_pixel_height > 65) max_bar_pixel_height = 65; // Cap for very tall screens, adjust as needed
-    if (max_bar_pixel_height < 20) max_bar_pixel_height = 20; 
+    if (max_bar_pixel_height > 70) max_bar_pixel_height = 70; // Increased max bar height
+    if (max_bar_pixel_height < 25) max_bar_pixel_height = 25; // Increased min height
 
     int graph_baseline_y = uv_value_on_bar_y + value_text_height/2 + padding + max_bar_pixel_height;
     int hour_label_y = graph_baseline_y + padding + hour_text_height/2;
 
+    // Check if hour_label_y is too low, adjust baseline and bar height if so
+    if (hour_label_y > tft.height() - padding) {
+        Serial.println("WARN: Calculated hour_label_y is too low. Adjusting graph elements.");
+        hour_label_y = tft.height() - padding - hour_text_height / 2;
+        graph_baseline_y = hour_label_y - padding - hour_text_height / 2;
+        max_bar_pixel_height = graph_baseline_y - (uv_value_on_bar_y + value_text_height/2 + padding);
+        if (max_bar_pixel_height < 10) { // Failsafe
+             Serial.println("ERR: Graph vertical space calculation failed!");
+             max_bar_pixel_height = 10;
+             graph_baseline_y = uv_value_on_bar_y + value_text_height/2 + padding + max_bar_pixel_height;
+             hour_label_y = graph_baseline_y + padding + hour_text_height/2;
+        }
+    }
+
+
+    int graph_area_x_start = padding + 5;
+    int graph_area_width = tft.width() - 2 * (padding + 5);
     int bar_slot_width = graph_area_width / HOURLY_FORECAST_COUNT;
     int bar_actual_width = bar_slot_width * 0.7; 
 
     for (int i = 0; i < HOURLY_FORECAST_COUNT; ++i) {
+        // ... (rest of the bar and label drawing logic from previous version, it should be fine) ...
+        // Ensure you use the corrected `uvValForBar` declaration and usage:
         int bar_center_x = graph_area_x_start + (i * bar_slot_width) + (bar_slot_width / 2);
 
         tft.setTextFont(hour_text_font); 
@@ -374,7 +400,7 @@ void drawForecastGraph(int start_y_offset) {
             tft.fillRect(bar_center_x - bar_actual_width / 2, bar_top_y, bar_actual_width, bar_height, barColor);
 
             tft.setTextFont(value_text_font); 
-            if (barColor == TFT_YELLOW || barColor == TFT_ORANGE) tft.setTextColor(TFT_BLACK); // Black text on light bars
+            if (barColor == TFT_YELLOW || barColor == TFT_ORANGE) tft.setTextColor(TFT_BLACK); 
             else tft.setTextColor(TFT_WHITE);
             tft.setTextDatum(MC_DATUM);
             tft.drawString(String(uvVal, (uvVal < 10 && uvVal != floor(uvVal)) ? 1 : 0 ), bar_center_x, uv_value_on_bar_y);
