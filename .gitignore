@@ -1,4 +1,5 @@
 src/secrets.h
+IGNORE
 
 # Prerequisites
 *.d
