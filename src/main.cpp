@@ -23,7 +23,7 @@ const unsigned long SCREEN_ON_DURATION_LPM_MS = 60 * 1000; // 1 minute screen on
 
 // --- Global Variables ---
 TFT_eSPI tft = TFT_eSPI();
-String lastUpdateTimeStr = "Never"; // Will be 24-hour format (e.g., "14:30")
+String lastUpdateTimeStr = "Never"; // Will be "HH:MM TZN" or "HH:MM"
 float deviceLatitude = MY_LATITUDE;
 float deviceLongitude = MY_LONGITUDE;
 String locationDisplayStr = "Initializing...";
@@ -36,29 +36,27 @@ int forecastHours[HOURLY_FORECAST_COUNT];
 // Display State & Update Control
 bool showInfoOverlay = false;
 bool force_display_update = true;
-bool dataJustFetched = false; // Flag to indicate new data has been fetched and needs display
-unsigned long lastDataFetchAttemptMs = 0; // Stores millis() of last data fetch attempt in normal mode
+bool dataJustFetched = false; 
+unsigned long lastDataFetchAttemptMs = 0; 
 
 // --- LPM State Variables ---
-bool isLowPowerModeActive = false;    // Current operational state
-unsigned long screenActiveUntilMs = 0; // Timestamp for screen timeout in LPM temporary wake
-bool temporaryScreenWakeupActive = false; // Flag for when LPM is on but screen is temporarily active
+bool isLowPowerModeActive = false;    
+unsigned long screenActiveUntilMs = 0; 
+bool temporaryScreenWakeupActive = false; 
 
 // --- Button Handling Variables ---
-// For BUTTON_INFO_PIN (GPIO 0)
 uint32_t button_info_last_press_time = 0;
 bool button_info_last_state = HIGH;
 uint32_t button_info_press_start_time = 0;
 bool button_info_is_held = false;
 
-// For BUTTON_LP_TOGGLE_PIN (GPIO 35)
 uint32_t button_lp_last_press_time = 0;
 bool button_lp_last_state = HIGH;
 uint32_t button_lp_press_start_time = 0;
 bool button_lp_is_held = false;
 
 const uint16_t DEBOUNCE_TIME_MS = 50;
-const uint16_t LONG_PRESS_TIME_MS = 1000; // 1 second for long press
+const uint16_t LONG_PRESS_TIME_MS = 1000; 
 
 // --- RTC Memory Variables ---
 RTC_DATA_ATTR uint32_t rtc_magic_cookie = 0;
@@ -66,7 +64,7 @@ RTC_DATA_ATTR bool rtc_isLowPowerModeActive = false;
 RTC_DATA_ATTR bool rtc_hasValidData = false;
 RTC_DATA_ATTR float rtc_hourlyUV[HOURLY_FORECAST_COUNT];
 RTC_DATA_ATTR int rtc_forecastHours[HOURLY_FORECAST_COUNT];
-RTC_DATA_ATTR char rtc_lastUpdateTimeStr_char[10];
+RTC_DATA_ATTR char rtc_lastUpdateTimeStr_char[16]; // Increased size for "HH:MM TZN" + null
 RTC_DATA_ATTR char rtc_locationDisplayStr_char[32];
 RTC_DATA_ATTR float rtc_deviceLatitude = MY_LATITUDE;
 RTC_DATA_ATTR float rtc_deviceLongitude = MY_LONGITUDE;
@@ -119,23 +117,31 @@ void saveStateToRTC() {
     rtc_isLowPowerModeActive = isLowPowerModeActive;
     rtc_useGpsFromSecretsGlobal = useGpsFromSecrets;
 
-    if (rtc_hasValidData) {
+    // Only save forecast and related display strings if data is considered valid
+    // This prevents overwriting good RTC data with "Offline" or placeholder data
+    // if a fetch fails just before sleeping.
+    if (rtc_hasValidData) { // Check the flag that fetchUVData sets upon success
         for (int i = 0; i < HOURLY_FORECAST_COUNT; ++i) {
-            rtc_hourlyUV[i] = hourlyUV[i];
+            rtc_hourlyUV[i] = hourlyUV[i]; // Assumes hourlyUV is up-to-date from a successful fetch
             rtc_forecastHours[i] = forecastHours[i];
         }
         strncpy(rtc_lastUpdateTimeStr_char, lastUpdateTimeStr.c_str(), sizeof(rtc_lastUpdateTimeStr_char) - 1);
         rtc_lastUpdateTimeStr_char[sizeof(rtc_lastUpdateTimeStr_char) - 1] = '\0';
+
         strncpy(rtc_locationDisplayStr_char, locationDisplayStr.c_str(), sizeof(rtc_locationDisplayStr_char) - 1);
         rtc_locationDisplayStr_char[sizeof(rtc_locationDisplayStr_char) - 1] = '\0';
+        
         rtc_deviceLatitude = deviceLatitude;
         rtc_deviceLongitude = deviceLongitude;
     }
+    // Note: rtc_hasValidData itself is also an RTC variable, updated by fetchUVData.
     #if DEBUG_LPM
-    Serial.printf("RTC: LPM Active: %s, HasValidData: %s, UseGPSSecrets: %s\n",
-                  rtc_isLowPowerModeActive ? "Yes" : "No", rtc_hasValidData ? "Yes" : "No", rtc_useGpsFromSecretsGlobal ? "Yes" : "No");
-    Serial.printf("RTC: Lat: %.4f, Lon: %.4f\n", rtc_deviceLatitude, rtc_deviceLongitude);
-    Serial.printf("RTC: LastUpdate: %s, LocationDisplay: %s\n", rtc_lastUpdateTimeStr_char, rtc_locationDisplayStr_char);
+    Serial.printf("RTC Save: LPM Active: %s, HasValidData: %s, UseGPSSecrets: %s\n",
+                  rtc_isLowPowerModeActive ? "Yes" : "No", 
+                  rtc_hasValidData ? "Yes" : "No", // Log the state of rtc_hasValidData
+                  rtc_useGpsFromSecretsGlobal ? "Yes" : "No");
+    Serial.printf("RTC Save: Lat: %.4f, Lon: %.4f\n", rtc_deviceLatitude, rtc_deviceLongitude);
+    Serial.printf("RTC Save: LastUpdate: %s, LocationDisplay: %s\n", rtc_lastUpdateTimeStr_char, rtc_locationDisplayStr_char);
     #endif
 }
 
@@ -146,7 +152,7 @@ void loadStateFromRTC() {
     if (rtc_magic_cookie == RTC_MAGIC_VALUE) {
         isLowPowerModeActive = rtc_isLowPowerModeActive;
         useGpsFromSecrets = rtc_useGpsFromSecretsGlobal;
-        if (rtc_hasValidData) {
+        if (rtc_hasValidData) { // Use the persisted rtc_hasValidData flag
             for (int i = 0; i < HOURLY_FORECAST_COUNT; ++i) {
                 hourlyUV[i] = rtc_hourlyUV[i];
                 forecastHours[i] = rtc_forecastHours[i];
@@ -155,37 +161,43 @@ void loadStateFromRTC() {
             locationDisplayStr = String(rtc_locationDisplayStr_char);
             deviceLatitude = rtc_deviceLatitude;
             deviceLongitude = rtc_deviceLongitude;
-            dataJustFetched = true;
+            dataJustFetched = true; // Treat loaded RTC data as if it was just fetched for display purposes
             #if DEBUG_LPM
             Serial.println("Valid data loaded from RTC.");
             #endif
         } else {
-            initializeForecastData();
+            initializeForecastData(); // Initialize working variables if RTC data is not marked valid
             #if DEBUG_LPM
-            Serial.println("No valid data in RTC, initialized to defaults.");
+            Serial.println("RTC data marked as not valid, initialized working data to defaults.");
             #endif
         }
-    } else {
+    } else { // First boot or RTC data corrupted
         #if DEBUG_LPM
-        Serial.println("RTC magic cookie mismatch or first boot. Initializing RTC data.");
+        Serial.println("RTC magic cookie mismatch or first boot. Initializing RTC data to defaults.");
         #endif
         isLowPowerModeActive = false;
         rtc_isLowPowerModeActive = false;
-        useGpsFromSecrets = false;
+        useGpsFromSecrets = false; // Default to IP Geo
         rtc_useGpsFromSecretsGlobal = false;
-        initializeForecastData(true);
-        rtc_hasValidData = false;
+        initializeForecastData(true); // Initialize working and RTC forecast arrays
+        rtc_hasValidData = false;     // Explicitly mark RTC data as not valid initially
         strncpy(rtc_lastUpdateTimeStr_char, "Never", sizeof(rtc_lastUpdateTimeStr_char) -1);
         rtc_lastUpdateTimeStr_char[sizeof(rtc_lastUpdateTimeStr_char)-1] = '\0';
+        lastUpdateTimeStr = "Never";
         strncpy(rtc_locationDisplayStr_char, "Initializing...", sizeof(rtc_locationDisplayStr_char)-1);
         rtc_locationDisplayStr_char[sizeof(rtc_locationDisplayStr_char)-1] = '\0';
-        rtc_deviceLatitude = MY_LATITUDE;
+        locationDisplayStr = "Initializing...";
+        rtc_deviceLatitude = MY_LATITUDE; // Fallback from secrets.h
         rtc_deviceLongitude = MY_LONGITUDE;
-        saveStateToRTC();
+        deviceLatitude = MY_LATITUDE;
+        deviceLongitude = MY_LONGITUDE;
+        saveStateToRTC(); // Save this initial default state (including rtc_hasValidData = false)
     }
     #if DEBUG_LPM
-    Serial.printf("Loaded from RTC: LPM Active: %s, UseGPSSecrets: %s\n",
-                  isLowPowerModeActive ? "Yes" : "No", useGpsFromSecrets ? "Yes" : "No");
+    Serial.printf("Loaded from RTC: LPM Active: %s, UseGPSSecrets: %s, RTCValidData: %s\n",
+                  isLowPowerModeActive ? "Yes" : "No", 
+                  useGpsFromSecrets ? "Yes" : "No",
+                  rtc_hasValidData ? "Yes" : "No");
     #endif
 }
 
@@ -208,13 +220,14 @@ uint64_t calculateSleepUntilNextHH05() {
     targetTimeInfo.tm_min = 5;
     targetTimeInfo.tm_sec = 0;
 
-    if (mktime(&targetTimeInfo) <= now) {
-        targetTimeInfo.tm_hour += 1;
+    if (mktime(&targetTimeInfo) <= now) { // If HH:05:00 for the current hour has passed or is now
+        targetTimeInfo.tm_hour += 1; // Aim for next hour
+        // mktime will normalize this.
     }
     time_t targetTimeEpoch = mktime(&targetTimeInfo);
     uint64_t sleepDurationS = difftime(targetTimeEpoch, now);
 
-    if (sleepDurationS <= 0 || sleepDurationS > (2 * 60 * 60)) { // Safety check for very short or very long (e.g. >2hr) sleep
+    if (sleepDurationS <= 0 || sleepDurationS > (2 * 60 * 60)) { 
         Serial.printf("Unusual sleep duration calculated (%llu s). Defaulting to 1 hour.\n", sleepDurationS);
         return 60 * 60 * 1000000ULL;
     }
@@ -258,6 +271,9 @@ void initializeForecastData(bool updateRTC) {
             rtc_forecastHours[i] = -1;
         }
     }
+    // Note: lastUpdateTimeStr and locationDisplayStr are not reset here
+    // to allow RTC values to persist if this is just a temporary init.
+    // fetchUVData will explicitly set them (and their RTC counterparts) on failure/success.
 }
 
 // --- Setup ---
@@ -272,7 +288,7 @@ void setup() {
 
     printWakeupReason();
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
-    loadStateFromRTC();
+    loadStateFromRTC(); // Critical: load LPM state and any existing data first
 
     tft.init();
     tft.setRotation(1);
@@ -284,21 +300,23 @@ void setup() {
             Serial.println("LPM: Timer Wake-up. Silent refresh cycle.");
             #endif
             temporaryScreenWakeupActive = false;
-            turnScreenOff();
-            connectToWiFi(true);
+            turnScreenOff(); // Ensure screen remains off
+            connectToWiFi(true); // Silent connect
             if (WiFi.status() == WL_CONNECTED) {
+                // Location for silent update is already set in deviceLatitude/Longitude from loadStateFromRTC
                 #if DEBUG_LPM
                 Serial.printf("LPM Silent: Using Lat: %.4f, Lon: %.4f (Source: %s)\n",
                               deviceLatitude, deviceLongitude, useGpsFromSecrets ? "Secrets" : "IP Geo (RTC)");
                 #endif
-                fetchUVData(true);
+                fetchUVData(true); // Silent fetch, updates RTC vars on success
             } else {
                 #if DEBUG_LPM
                 Serial.println("LPM Silent: No WiFi, cannot fetch UV data.");
                 #endif
+                // If WiFi fails, rtc_hasValidData will remain as it was, or be set to false by fetchUVData
             }
             enterDeepSleep(calculateSleepUntilNextHH05(), true);
-        } else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
+        } else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) { // Button wake (GPIO 0)
             #if DEBUG_LPM
             Serial.println("LPM: Button Wake-up (GPIO 0). Temporary screen on.");
             #endif
@@ -306,27 +324,30 @@ void setup() {
             screenActiveUntilMs = millis() + SCREEN_ON_DURATION_LPM_MS;
             turnScreenOn();
             tft.fillScreen(TFT_BLACK);
-            if (rtc_hasValidData) {
+            if (rtc_hasValidData) { // Display data loaded from RTC
                 force_display_update = true;
             } else {
                 displayMessage("LPM: No data yet", "Hourly update pending", TFT_YELLOW, true);
             }
-            connectToWiFi(true);
-            if (WiFi.status() == WL_CONNECTED && !rtc_hasValidData) {
-                fetchUVData(false);
+            // Attempt a background WiFi connection for potential quick refresh or location change
+            connectToWiFi(true); // Silent, non-blocking ideally, or quick timeout
+            if (WiFi.status() == WL_CONNECTED && !rtc_hasValidData) { // If no RTC data, try a quick fetch now screen is on
+                fetchUVData(false); // Non-silent fetch to populate display
             }
-        } else { // Initial boot into LPM (e.g. if rtc_isLowPowerModeActive was true from previous run but not a timer/button wake) or other wake reason
+            // Proceed to loop() for button handling and screen timeout
+        } else { // Initial boot into LPM state (e.g. power cycle while LPM was active) or other wake
             #if DEBUG_LPM
-            Serial.println("LPM: Non-timer/button wake or initial boot into LPM state. Forcing sleep.");
+            Serial.println("LPM: Non-timer/button wake or initial boot into LPM state. Forcing sleep after brief message.");
             #endif
-            isLowPowerModeActive = true; 
-            temporaryScreenWakeupActive = false;
-            turnScreenOn(); 
+            isLowPowerModeActive = true; // Ensure it's set for RTC save
+            temporaryScreenWakeupActive = false; // Screen is off for this path mostly
+            turnScreenOn(); // Momentarily for message
             displayMessage("LPM Active", "Syncing...", TFT_BLUE, true);
             delay(1500);
+            // Screen will be turned off by enterDeepSleep
             enterDeepSleep(calculateSleepUntilNextHH05(), true);
         }
-    } else { // Normal Mode
+    } else { // Normal Mode (Not LPM, or LPM just turned OFF by button)
         #if DEBUG_LPM
         Serial.println("Normal Mode Startup.");
         #endif
@@ -334,54 +355,59 @@ void setup() {
         turnScreenOn();
         tft.fillScreen(TFT_BLACK);
 
-        if (rtc_hasValidData && wakeup_reason != ESP_SLEEP_WAKEUP_UNDEFINED && wakeup_reason != ESP_SLEEP_WAKEUP_TIMER /*Check it wasn't a timer wake that got here somehow*/) {
+        // If waking from sleep where LPM was just turned OFF, RTC data might be valid
+        if (rtc_hasValidData && wakeup_reason != ESP_SLEEP_WAKEUP_UNDEFINED) {
              #if DEBUG_LPM
-            Serial.println("Normal Mode: Resuming with RTC data.");
+            Serial.println("Normal Mode: Resuming with RTC data available.");
             #endif
-            force_display_update = true;
+            // Data already loaded into working vars by loadStateFromRTC()
+            force_display_update = true; // Display the loaded RTC data
         }
         
         displayMessage("Connecting to WiFi...", "", TFT_YELLOW, true);
-        connectToWiFi(false);
+        connectToWiFi(false); // Non-silent connect
 
         if (WiFi.status() == WL_CONNECTED) {
-            if (useGpsFromSecrets) {
+            // Determine initial location based on (RTC loaded) useGpsFromSecrets
+            if (useGpsFromSecrets) { // Use secrets.h values
                 deviceLatitude = MY_LATITUDE;
                 deviceLongitude = MY_LONGITUDE;
                 locationDisplayStr = "Secrets GPS";
                 Serial.println("Normal Mode: Using GPS from secrets.h");
-            } else {
+            } else { // Attempt IP Geolocation
                 displayMessage("Fetching IP Location...", "", TFT_SKYBLUE, true);
-                if (fetchLocationFromIp(false)) {
+                if (fetchLocationFromIp(false)) { // This updates deviceLat/Lon and locationDisplayStr
                     Serial.println("Normal Mode: IP Geolocation successful.");
                 } else {
                     Serial.println("Normal Mode: IP Geolocation failed. Using GPS from secrets.h as fallback.");
-                    useGpsFromSecrets = true;
+                    useGpsFromSecrets = true; // Fallback to secrets
                     deviceLatitude = MY_LATITUDE;
                     deviceLongitude = MY_LONGITUDE;
                     locationDisplayStr = "IP Fail>Secrets";
                 }
             }
+            // Now fetch UV data for the determined location
             String currentStatusForDisplay = locationDisplayStr;
             if (currentStatusForDisplay.length() > 18) currentStatusForDisplay = currentStatusForDisplay.substring(0,15) + "...";
             displayMessage("Fetching UV data...", currentStatusForDisplay, TFT_CYAN, true);
-            if (fetchUVData(false)) {
-                lastDataFetchAttemptMs = millis();
+            if (fetchUVData(false)) { // Non-silent fetch
+                lastDataFetchAttemptMs = millis(); // Reset timer for periodic updates
             }
-        } else {
-            locationDisplayStr = "Offline>Secrets";
-            useGpsFromSecrets = true;
+        } else { // WiFi failed in normal startup
+            locationDisplayStr = "Offline>Secrets"; // Default display if no WiFi
+            useGpsFromSecrets = true; // Can't use IP geo
             deviceLatitude = MY_LATITUDE;
             deviceLongitude = MY_LONGITUDE;
-            initializeForecastData();
+            initializeForecastData(); // Show placeholders
+            lastUpdateTimeStr = "Offline";
         }
-        force_display_update = true;
+        force_display_update = true; // Ensure display update after setup
     }
 }
 
 // --- Main Loop ---
 void loop() {
-    handle_buttons();
+    handle_buttons(); // Process button inputs
 
     if (isLowPowerModeActive) {
         if (temporaryScreenWakeupActive) {
@@ -392,10 +418,13 @@ void loop() {
                 temporaryScreenWakeupActive = false;
                 enterDeepSleep(calculateSleepUntilNextHH05(), true);
             }
-            if (dataJustFetched) { // e.g. from location change
-                force_display_update = true;
-            }
+            // If data was just fetched due to a button action (e.g. location change)
+            // dataJustFetched flag will be true.
         } else {
+            // LPM is active, but screen is not temporarily on.
+            // This state should ideally be reached only if setup decided to sleep,
+            // or if a button action turned LPM ON and initiated sleep.
+            // As a fallback, if loop is reached in this state, go to sleep.
             #if DEBUG_LPM
             Serial.println("LPM: Active, screen off. Fallback to deep sleep from loop.");
             #endif
@@ -403,38 +432,41 @@ void loop() {
         }
     } else { // Normal Mode
         unsigned long currentMillis = millis();
+        // Check for periodic update
         if ((WiFi.status() == WL_CONNECTED) && (currentMillis - lastDataFetchAttemptMs >= UPDATE_INTERVAL_MS_NORMAL_MODE)) {
             Serial.println("Normal Mode: Update interval reached.");
             String tempLocStr = locationDisplayStr;
             if (tempLocStr.length() > 18) tempLocStr = tempLocStr.substring(0,15) + "...";
-            displayMessage("Updating UV data...", tempLocStr, TFT_CYAN, true);
-            if (fetchUVData(false)) {
-                lastDataFetchAttemptMs = currentMillis;
+            displayMessage("Updating UV data...", tempLocStr, TFT_CYAN, true); // Inform user
+            if (fetchUVData(false)) { // Non-silent fetch
+                lastDataFetchAttemptMs = currentMillis; // Reset timer on successful fetch
             } else {
-                Serial.println("Normal Mode: UV Data fetch failed.");
+                Serial.println("Normal Mode: UV Data fetch failed for periodic update.");
+                // lastDataFetchAttemptMs is not updated, so it will retry sooner based on interval.
             }
-        } else if (WiFi.status() != WL_CONNECTED && (currentMillis - lastDataFetchAttemptMs >= 60000)) {
+        } else if (WiFi.status() != WL_CONNECTED && (currentMillis - lastDataFetchAttemptMs >= 60000)) { // Retry WiFi connect every minute if down
              Serial.println("Normal Mode: No WiFi. Attempting reconnect...");
-             connectToWiFi(false);
-             if(WiFi.status() == WL_CONNECTED) {
-                lastDataFetchAttemptMs = 0; 
+             connectToWiFi(false); // Try to reconnect
+             if(WiFi.status() == WL_CONNECTED) { // If reconnected, try to fetch data immediately
+                lastDataFetchAttemptMs = 0; // Force immediate fetch attempt on next suitable loop
              } else {
-                lastDataFetchAttemptMs = currentMillis;
+                lastDataFetchAttemptMs = currentMillis; // Don't spam connection attempts
                 lastUpdateTimeStr = "Offline";
-                initializeForecastData();
-                dataJustFetched = true;
+                initializeForecastData(); // Show placeholders
+                dataJustFetched = true; // To update display with "Offline"
              }
         }
     }
 
+    // Common Display Update Logic
     if (force_display_update || dataJustFetched) {
-        if (!isLowPowerModeActive || temporaryScreenWakeupActive) {
+        if (!isLowPowerModeActive || temporaryScreenWakeupActive) { // Only display if screen is supposed to be on
             displayInfo();
         }
         force_display_update = false;
-        dataJustFetched = false;
+        dataJustFetched = false; // Reset flag after display update
     }
-    delay(50);
+    delay(50); // General delay for stability, button responsiveness
 }
 
 // --- Consolidated Button Handling ---
@@ -446,33 +478,47 @@ void handle_buttons() {
     if (current_info_button_state == LOW && button_info_last_state == HIGH && (current_millis - button_info_last_press_time > DEBOUNCE_TIME_MS)) {
         button_info_press_start_time = current_millis;
         button_info_is_held = false;
-    } else if (current_info_button_state == LOW && !button_info_is_held) {
-        if (current_millis - button_info_press_start_time > LONG_PRESS_TIME_MS) {
-            if (showInfoOverlay) {
+    } else if (current_info_button_state == LOW && !button_info_is_held) { // Button is being held
+        if (current_millis - button_info_press_start_time > LONG_PRESS_TIME_MS) { // Long Press Action
+            if (showInfoOverlay) { // Long press for location toggle only active if info overlay is ON
                 useGpsFromSecrets = !useGpsFromSecrets;
-                rtc_useGpsFromSecretsGlobal = useGpsFromSecrets;
+                rtc_useGpsFromSecretsGlobal = useGpsFromSecrets; // Persist choice
                 Serial.printf("Location Mode Toggled (Long Press): %s\n", useGpsFromSecrets ? "Secrets GPS" : "IP Geolocation");
+
                 if (useGpsFromSecrets) {
-                    deviceLatitude = MY_LATITUDE; deviceLongitude = MY_LONGITUDE; locationDisplayStr = "Secrets GPS";
-                    dataJustFetched = true;
-                } else {
-                    locationDisplayStr = "IP Geo..."; force_display_update = true; displayInfo();
-                    if (fetchLocationFromIp(false)) {/* locationDisplayStr updated */} else {
-                        locationDisplayStr = "IP Fail>Secrets"; useGpsFromSecrets = true; rtc_useGpsFromSecretsGlobal = true;
+                    deviceLatitude = MY_LATITUDE; deviceLongitude = MY_LONGITUDE;
+                    locationDisplayStr = "Secrets GPS";
+                } else { // Switched to IP Geolocation
+                    locationDisplayStr = "IP Geo..."; // Show intermediate state
+                    force_display_update = true; displayInfo(); // Update display immediately
+                    if (!fetchLocationFromIp(false)) { // Attempt to get new IP location (non-silent)
+                        locationDisplayStr = "IP Fail>Secrets"; // Fallback if IP geo fails
+                        useGpsFromSecrets = true; rtc_useGpsFromSecretsGlobal = true; // Revert and persist
                         deviceLatitude = MY_LATITUDE; deviceLongitude = MY_LONGITUDE;
                     }
-                    dataJustFetched = true;
+                    // deviceLatitude, deviceLongitude, locationDisplayStr are updated by fetchLocationFromIp on success
                 }
-                if (isLowPowerModeActive && temporaryScreenWakeupActive) screenActiveUntilMs = current_millis + SCREEN_ON_DURATION_LPM_MS;
-                force_display_update = true;
+                
+                // Regardless of IP/Secrets, fetch new UV data for the new/current location
+                displayMessage("Fetching UV data...", locationDisplayStr.substring(0,18), TFT_CYAN, true);
+                if (fetchUVData(false)) { // Non-silent fetch
+                    if (!isLowPowerModeActive) lastDataFetchAttemptMs = current_millis; // Reset normal mode timer
+                }
+
+                if (isLowPowerModeActive && temporaryScreenWakeupActive) {
+                    screenActiveUntilMs = current_millis + SCREEN_ON_DURATION_LPM_MS; // Reset screen timer
+                }
+                force_display_update = true; // Ensure display refreshes with new data/status
             }
             button_info_is_held = true; button_info_last_press_time = current_millis;
         }
-    } else if (current_info_button_state == HIGH && button_info_last_state == LOW && (current_millis - button_info_last_press_time > DEBOUNCE_TIME_MS)) {
-        if (!button_info_is_held) {
+    } else if (current_info_button_state == HIGH && button_info_last_state == LOW && (current_millis - button_info_last_press_time > DEBOUNCE_TIME_MS)) { // Button released
+        if (!button_info_is_held) { // Short Press Action
             showInfoOverlay = !showInfoOverlay;
             Serial.printf("Info Button Short Press, showInfoOverlay: %s\n", showInfoOverlay ? "true" : "false");
-            if (isLowPowerModeActive && temporaryScreenWakeupActive) screenActiveUntilMs = current_millis + SCREEN_ON_DURATION_LPM_MS;
+            if (isLowPowerModeActive && temporaryScreenWakeupActive) {
+                screenActiveUntilMs = current_millis + SCREEN_ON_DURATION_LPM_MS; // Reset screen timer
+            }
             force_display_update = true;
         }
         button_info_last_press_time = current_millis; button_info_is_held = false;
@@ -483,22 +529,24 @@ void handle_buttons() {
     bool current_lp_button_state = digitalRead(BUTTON_LP_TOGGLE_PIN);
     if (current_lp_button_state == LOW && button_lp_last_state == HIGH && (current_millis - button_lp_last_press_time > DEBOUNCE_TIME_MS)) {
         button_lp_press_start_time = current_millis; button_lp_is_held = false;
-    } else if (current_lp_button_state == LOW && !button_lp_is_held) {
-        if (current_millis - button_lp_press_start_time > LONG_PRESS_TIME_MS) {
-            isLowPowerModeActive = !isLowPowerModeActive; rtc_isLowPowerModeActive = isLowPowerModeActive;
+    } else if (current_lp_button_state == LOW && !button_lp_is_held) { // Button is being held
+        if (current_millis - button_lp_press_start_time > LONG_PRESS_TIME_MS) { // Long Press Action
+            isLowPowerModeActive = !isLowPowerModeActive; rtc_isLowPowerModeActive = isLowPowerModeActive; // Persist
             Serial.printf("LPM Toggled (Long Press): %s\n", isLowPowerModeActive ? "ON" : "OFF");
-            if (isLowPowerModeActive) {
-                temporaryScreenWakeupActive = false; turnScreenOn();
+            if (isLowPowerModeActive) { // Turning LPM ON
+                temporaryScreenWakeupActive = false; turnScreenOn(); // Briefly for message
                 displayMessage("Low Power Mode: ON", "Sleeping...", TFT_BLUE, true); delay(2000);
-                enterDeepSleep(calculateSleepUntilNextHH05(), true);
-            } else {
-                temporaryScreenWakeupActive = false; turnScreenOn();
+                enterDeepSleep(calculateSleepUntilNextHH05(), true); // Enter LPM sleep
+            } else { // Turning LPM OFF
+                temporaryScreenWakeupActive = false; turnScreenOn(); // Ensure screen is on
                 displayMessage("Low Power Mode: OFF", "", TFT_GREEN, true); delay(1500);
-                lastDataFetchAttemptMs = 0; dataJustFetched = true; force_display_update = true;
+                lastDataFetchAttemptMs = 0; // Force data fetch attempt soon in loop for normal operation
+                force_display_update = true; // Ensure display refreshes
+                // fetchUVData will be called by loop's normal mode logic
             }
             button_lp_is_held = true; button_lp_last_press_time = current_millis;
         }
-    } else if (current_lp_button_state == HIGH && button_lp_last_state == LOW && (current_millis - button_lp_last_press_time > DEBOUNCE_TIME_MS)) {
+    } else if (current_lp_button_state == HIGH && button_lp_last_state == LOW && (current_millis - button_lp_last_press_time > DEBOUNCE_TIME_MS)) { // Button released
         button_lp_last_press_time = current_millis; button_lp_is_held = false;
     }
     button_lp_last_state = current_lp_button_state;
@@ -541,7 +589,10 @@ void displayInfo() {
             tft.setTextColor(TFT_RED, TFT_BLACK); tft.drawString("WiFi: Offline", padding, current_info_y);
         }
         tft.setTextDatum(TR_DATUM); tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-        tft.drawString("Upd: " + lastUpdateTimeStr, tft.width() - padding, current_info_y);
+        // Ensure lastUpdateTimeStr is not excessively long for display
+        String timeToDisplay = lastUpdateTimeStr;
+        if (timeToDisplay.length() > 12) timeToDisplay = timeToDisplay.substring(0,9) + "...";
+        tft.drawString("Upd: " + timeToDisplay, tft.width() - padding, current_info_y);
         current_info_y += (info_font_height + padding);
 
         tft.setTextDatum(TL_DATUM); tft.setTextColor(TFT_SKYBLUE, TFT_BLACK);
@@ -549,12 +600,13 @@ void displayInfo() {
         if (locText.length() > 30) locText = locText.substring(0, 27) + "...";
         tft.drawString(locText, padding, current_info_y);
         top_y_offset = current_info_y + info_font_height / 2 + padding * 2;
-    } else {
+    } else { // Info overlay is OFF
         if (WiFi.status() != WL_CONNECTED) {
             tft.setTextDatum(MC_DATUM); tft.setTextColor(TFT_RED, TFT_BLACK);
             tft.drawString("! No WiFi Connection !", tft.width() / 2, base_top_text_line_y);
             top_y_offset = base_top_text_line_y + info_font_height / 2 + padding * 2;
         }
+        // If LPM is active and screen is temporarily on, show a small LPM indicator even if overlay is off
         if (isLowPowerModeActive && temporaryScreenWakeupActive) {
             tft.setTextDatum(TR_DATUM); tft.setTextColor(TFT_ORANGE, TFT_BLACK);
             tft.drawString("LPM", tft.width() - padding, base_top_text_line_y);
@@ -564,6 +616,7 @@ void displayInfo() {
 }
 
 void drawForecastGraph(int start_y_offset) {
+    // This function remains largely the same as your v2, with text outline
     int padding = 2; int first_uv_val_font = 6; int other_uv_val_font = 4; int hour_label_font = 2;
     tft.setTextFont(first_uv_val_font); int first_uv_text_h = tft.fontHeight();
     tft.setTextFont(other_uv_val_font); int other_uv_text_h = tft.fontHeight();
@@ -607,13 +660,13 @@ void drawForecastGraph(int start_y_offset) {
             uint16_t outlineColor = TFT_BLACK; uint16_t foregroundColor = TFT_WHITE;
             if (i == 0) { tft.setTextFont(first_uv_val_font); current_uv_text_y = first_uv_value_y; }
             else { tft.setTextFont(other_uv_val_font); current_uv_text_y = other_uv_values_line_y; }
-            tft.setTextColor(outlineColor);
+            tft.setTextColor(outlineColor); // No background for outline parts
             tft.drawString(uvText, bar_center_x - 1, current_uv_text_y -1); tft.drawString(uvText, bar_center_x + 1, current_uv_text_y -1);
             tft.drawString(uvText, bar_center_x - 1, current_uv_text_y +1); tft.drawString(uvText, bar_center_x + 1, current_uv_text_y +1);
             tft.drawString(uvText, bar_center_x - 1, current_uv_text_y);    tft.drawString(uvText, bar_center_x + 1, current_uv_text_y);
             tft.drawString(uvText, bar_center_x, current_uv_text_y - 1);    tft.drawString(uvText, bar_center_x, current_uv_text_y + 1);
             tft.setTextColor(foregroundColor, TFT_BLACK); tft.drawString(uvText, bar_center_x, current_uv_text_y);
-        } else {
+        } else { // Placeholder
             int placeholder_y; int placeholder_font;
             if (i == 0) { placeholder_font = first_uv_val_font; placeholder_y = first_uv_value_y; }
             else { placeholder_font = other_uv_val_font; placeholder_y = other_uv_values_line_y; }
@@ -668,19 +721,19 @@ void connectToWiFi(bool silent) {
         else Serial.printf("LPM Silent: WiFi connected to %s, IP: %s\n", connected_ssid.c_str(), WiFi.localIP().toString().c_str());
         #endif
         
+        // Always use UTC for initial NTP. fetchUVData will set local time based on API.
         if (!silent) Serial.println("Configuring time via NTP (UTC)...");
-        configTime(0, 0, "pool.ntp.org", "time.nist.gov"); // Always use UTC for initial NTP
+        configTime(0, 0, "pool.ntp.org", "time.nist.gov"); 
         
         struct tm timeinfo;
-        if(!getLocalTime(&timeinfo, 10000)){
+        if(!getLocalTime(&timeinfo, 10000)){ // 10s timeout for NTP
             if (!silent) Serial.println("Failed to obtain initial time from NTP.");
-            lastUpdateTimeStr = "Time N/A";
+            // lastUpdateTimeStr will be set by fetchUVData or remain "Never"/"Offline"
         } else {
             if (!silent) Serial.println("Initial time configured via NTP (UTC).");
-            char timeStr[10]; strftime(timeStr, sizeof(timeStr), "%H:%M UTC", &timeinfo); // Indicate UTC
-            lastUpdateTimeStr = String(timeStr);
+            // Don't set lastUpdateTimeStr here with UTC, wait for fetchUVData for local time.
         }
-    } else {
+    } else { // WiFi connection failed
         if (!silent) {
             Serial.println("\nCould not connect to any configured WiFi network.");
             displayMessage("WiFi Connection Failed.", "Check credentials.", TFT_RED, true);
@@ -688,7 +741,7 @@ void connectToWiFi(bool silent) {
         #if DEBUG_LPM
         else Serial.println("LPM Silent: WiFi connection failed.");
         #endif
-        lastUpdateTimeStr = "Offline";
+        // lastUpdateTimeStr will be handled by fetchUVData attempt or remain "Never"
     }
 }
 
@@ -698,7 +751,9 @@ bool fetchLocationFromIp(bool silent) {
         #if DEBUG_LPM
         else Serial.println("LPM Silent: Cannot fetch IP location, no WiFi.");
         #endif
-        locationDisplayStr = "IP (NoNet)";
+        locationDisplayStr = "IP (NoNet)"; // Update working string
+        // Don't update RTC location string here, it might hold valid previous data.
+        // Let a successful fetch update RTC.
         return false;
     }
     HTTPClient http; String url = "http://ip-api.com/json/?fields=status,message,lat,lon,city";
@@ -728,19 +783,22 @@ bool fetchLocationFromIp(bool silent) {
                 deviceLatitude = doc["lat"].as<float>(); deviceLongitude = doc["lon"].as<float>();
                 const char* city = doc["city"];
                 if (city) locationDisplayStr = String("IP: ") + city; else locationDisplayStr = "IP: Unknown";
+                
                 if (!silent) Serial.printf("IP Geo Location: Lat=%.4f, Lon=%.4f, City=%s\n", deviceLatitude, deviceLongitude, city ? city : "N/A");
                 #if DEBUG_LPM
                 else Serial.printf("LPM Silent: IP Geo Success: Lat=%.2f Lon=%.2f City=%s\n", deviceLatitude, deviceLongitude, city ? city : "N/A");
                 #endif
+                
+                // Update RTC location data on successful fetch
                 rtc_deviceLatitude = deviceLatitude; rtc_deviceLongitude = deviceLongitude;
                 strncpy(rtc_locationDisplayStr_char, locationDisplayStr.c_str(), sizeof(rtc_locationDisplayStr_char) - 1);
                 rtc_locationDisplayStr_char[sizeof(rtc_locationDisplayStr_char) - 1] = '\0';
                 success = true;
-            } else {
+            } else { // API status not "success"
                 locationDisplayStr = String("IP (API Err)");
             }
         }
-    } else {
+    } else { // HTTP error
         locationDisplayStr = String("IP (HTTP Err)");
     }
     http.end(); return success;
@@ -752,11 +810,15 @@ bool fetchUVData(bool silent) {
         #if DEBUG_LPM
         else Serial.println("LPM Silent: No WiFi, cannot fetch UV data.");
         #endif
-        initializeForecastData(true); lastUpdateTimeStr = "Offline";
+        initializeForecastData(true); // Initialize working and RTC forecast arrays
+        lastUpdateTimeStr = "Offline";
         strncpy(rtc_lastUpdateTimeStr_char, "Offline", sizeof(rtc_lastUpdateTimeStr_char)-1);
         rtc_lastUpdateTimeStr_char[sizeof(rtc_lastUpdateTimeStr_char)-1] = '\0';
-        rtc_hasValidData = false; dataJustFetched = true; return false;
+        rtc_hasValidData = false; // Mark RTC data as not valid
+        dataJustFetched = true; // Signal for display update if screen is on
+        return false;
     }
+
     HTTPClient http; String apiUrl = openMeteoUrl + "?latitude=" + String(deviceLatitude, 4) +
                     "&longitude=" + String(deviceLongitude, 4) + "&hourly=uv_index&forecast_days=1&timezone=auto";
     if (!silent) {Serial.print("Fetching UV Data from URL: "); Serial.println(apiUrl);}
@@ -778,21 +840,24 @@ bool fetchUVData(bool silent) {
             else Serial.printf("LPM Silent: UV JSON deserialize failed: %s\n", error.c_str());
             #endif
             initializeForecastData(true); rtc_hasValidData = false;
-        } else {
+        } else { // JSON parsing successful
+            // Timezone sync from API
             if (!doc["utc_offset_seconds"].isNull()) {
                 long api_utc_offset_sec = doc["utc_offset_seconds"].as<long>();
-                configTime(api_utc_offset_sec, 0, "pool.ntp.org", "time.nist.gov");
+                configTime(api_utc_offset_sec, 0, "pool.ntp.org", "time.nist.gov"); // 0 for DST as API gives total offset
                 if (!silent) Serial.println("ESP32 local time reconfigured using Open-Meteo offset.");
                 #if DEBUG_LPM
                 else Serial.println("LPM Silent: ESP32 time reconfigured from API offset.");
                 #endif
-                delay(100);
+                delay(100); // Allow time to sync
             }
+
+            // Populate forecast data
             if (!doc["hourly"].isNull() && !doc["hourly"]["time"].isNull() && !doc["hourly"]["uv_index"].isNull()) {
                 JsonArray hourly_time_list = doc["hourly"]["time"].as<JsonArray>();
                 JsonArray hourly_uv_list = doc["hourly"]["uv_index"].as<JsonArray>();
-                struct tm timeinfo;
-                if (!getLocalTime(&timeinfo, 5000)) {
+                struct tm timeinfo; // For matching forecast start hour
+                if (!getLocalTime(&timeinfo, 5000)) { // Get current (now local) time
                     if (!silent) Serial.println("Failed to obtain ESP32 local time for forecast matching.");
                     #if DEBUG_LPM
                     else Serial.println("LPM Silent: Failed to get local time for forecast matching.");
@@ -807,41 +872,75 @@ bool fetchUVData(bool silent) {
                             if (api_hour >= currentHourLocal) {startIndex = i; break;}
                         }
                     }
-                    if (startIndex != -1) {
+                    if (startIndex != -1) { // Found a starting point for the forecast
                         for (int i = 0; i < HOURLY_FORECAST_COUNT; ++i) {
                             if (startIndex + i < hourly_uv_list.size() && startIndex + i < hourly_time_list.size()) {
                                 JsonVariant uv_val_variant = hourly_uv_list[startIndex + i];
                                 hourlyUV[i] = uv_val_variant.isNull() ? 0.0f : uv_val_variant.as<float>();
-                                if (hourlyUV[i] < 0) hourlyUV[i] = 0.0f; rtc_hourlyUV[i] = hourlyUV[i];
+                                if (hourlyUV[i] < 0) hourlyUV[i] = 0.0f; 
+                                rtc_hourlyUV[i] = hourlyUV[i]; // Update RTC
                                 String api_t_str = hourly_time_list[startIndex + i].as<String>();
-                                forecastHours[i] = api_t_str.substring(11, 13).toInt(); rtc_forecastHours[i] = forecastHours[i];
-                            } else {
-                                hourlyUV[i] = -1.0f; forecastHours[i] = -1; rtc_hourlyUV[i] = -1.0f; rtc_forecastHours[i] = -1;
+                                forecastHours[i] = api_t_str.substring(11, 13).toInt(); 
+                                rtc_forecastHours[i] = forecastHours[i]; // Update RTC
+                            } else { // Not enough forecast data from API
+                                hourlyUV[i] = -1.0f; forecastHours[i] = -1; 
+                                rtc_hourlyUV[i] = -1.0f; rtc_forecastHours[i] = -1;
                             }
                         }
-                        success = true; rtc_hasValidData = true;
+                        success = true; 
+                        rtc_hasValidData = true; // Mark RTC data as valid
                         if (!silent) Serial.println("Successfully populated hourly forecast data.");
                         #if DEBUG_LPM
                         else Serial.println("LPM Silent: Successfully populated hourly forecast data to RAM & RTC.");
                         #endif
-                    } else { initializeForecastData(true); rtc_hasValidData = false; }
+                    } else { // No suitable starting index found in API's hourly forecast
+                        if (!silent) Serial.println("No suitable starting forecast index found.");
+                        #if DEBUG_LPM
+                        else Serial.println("LPM Silent: No suitable forecast index.");
+                        #endif
+                        initializeForecastData(true); rtc_hasValidData = false; 
+                    }
                 }
-            } else { initializeForecastData(true); rtc_hasValidData = false; }
+            } else { // Hourly data structure not found in JSON
+                if (!silent) Serial.println("Hourly UV data structure not found in JSON.");
+                 #if DEBUG_LPM
+                else Serial.println("LPM Silent: Hourly UV data structure not found.");
+                #endif
+                initializeForecastData(true); rtc_hasValidData = false;
+            }
         }
+        // Update last update time string (both working and RTC) using current local time
         struct tm timeinfo_update;
-        if(getLocalTime(&timeinfo_update, 1000)){
-            char timeStr[10]; strftime(timeStr, sizeof(timeStr), "%H:%M", &timeinfo_update);
-            lastUpdateTimeStr = String(timeStr);
+        if(getLocalTime(&timeinfo_update, 1000)){ // Get current local time
+            char timeStrBuffer[16]; 
+            const char* tz_abbr = doc["timezone_abbreviation"].isNull() ? nullptr : doc["timezone_abbreviation"].as<const char*>();
+            
+            if (tz_abbr && strlen(tz_abbr) > 0 && strlen(tz_abbr) < 5) { // Basic check for valid-ish abbreviation
+                snprintf(timeStrBuffer, sizeof(timeStrBuffer), "%02d:%02d %s", timeinfo_update.tm_hour, timeinfo_update.tm_min, tz_abbr);
+            } else {
+                strftime(timeStrBuffer, sizeof(timeStrBuffer), "%H:%M", &timeinfo_update); // Fallback to HH:MM
+            }
+            lastUpdateTimeStr = String(timeStrBuffer);
             strncpy(rtc_lastUpdateTimeStr_char, lastUpdateTimeStr.c_str(), sizeof(rtc_lastUpdateTimeStr_char)-1);
             rtc_lastUpdateTimeStr_char[sizeof(rtc_lastUpdateTimeStr_char)-1] = '\0';
+        } else { // Failed to get local time after API call
+            lastUpdateTimeStr = "Time Err";
+            strncpy(rtc_lastUpdateTimeStr_char, "Time Err", sizeof(rtc_lastUpdateTimeStr_char)-1);
+            rtc_lastUpdateTimeStr_char[sizeof(rtc_lastUpdateTimeStr_char)-1] = '\0';
         }
-    } else {
+    } else { // HTTP error
         initializeForecastData(true); rtc_hasValidData = false;
-        if (WiFi.status() != WL_CONNECTED) {
+        if (WiFi.status() != WL_CONNECTED) { // If HTTP error was due to WiFi drop
             lastUpdateTimeStr = "Offline";
             strncpy(rtc_lastUpdateTimeStr_char, "Offline", sizeof(rtc_lastUpdateTimeStr_char)-1);
             rtc_lastUpdateTimeStr_char[sizeof(rtc_lastUpdateTimeStr_char)-1] = '\0';
+        } else { // HTTP error but WiFi is connected
+            lastUpdateTimeStr = "API Err";
+            strncpy(rtc_lastUpdateTimeStr_char, "API Err", sizeof(rtc_lastUpdateTimeStr_char)-1);
+            rtc_lastUpdateTimeStr_char[sizeof(rtc_lastUpdateTimeStr_char)-1] = '\0';
         }
     }
-    http.end(); dataJustFetched = true; return success;
+    http.end(); 
+    dataJustFetched = true; // Signal that data has been processed (successfully or not)
+    return success;
 }
