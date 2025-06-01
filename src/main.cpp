@@ -15,6 +15,7 @@ const unsigned long SCREEN_ON_DURATION_LPM_MS = 30 * 1000; // 30 second screen o
 // --- Debugging Flags ---
 #define DEBUG_LPM 1             // Set to 1 to enable LPM specific logs
 #define DEBUG_GRAPH_DRAWING 0   // Set to 1 to enable detailed graph drawing logs, 0 to disable
+#define DEBUG_RTC 1             // Set to 1 to enable detailed RTC save/load logs
 
 // --- Pins ---
 #define BUTTON_INFO_PIN 0         // GPIO 0 for info overlay, location toggle, and primary wake from LPM
@@ -38,6 +39,7 @@ bool showInfoOverlay = false;
 bool force_display_update = true;
 bool dataJustFetched = false; 
 unsigned long lastDataFetchAttemptMs = 0; 
+bool isConnectingToWiFi = false; // Flag for "Connecting to WiFi..." message
 
 // --- LPM State Variables ---
 bool isLowPowerModeActive = false;    
@@ -64,7 +66,7 @@ RTC_DATA_ATTR bool rtc_isLowPowerModeActive = false;
 RTC_DATA_ATTR bool rtc_hasValidData = false;
 RTC_DATA_ATTR float rtc_hourlyUV[HOURLY_FORECAST_COUNT];
 RTC_DATA_ATTR int rtc_forecastHours[HOURLY_FORECAST_COUNT];
-RTC_DATA_ATTR char rtc_lastUpdateTimeStr_char[16]; // Increased size for "HH:MM TZN" + null
+RTC_DATA_ATTR char rtc_lastUpdateTimeStr_char[16]; 
 RTC_DATA_ATTR char rtc_locationDisplayStr_char[32];
 RTC_DATA_ATTR float rtc_deviceLatitude = MY_LATITUDE;
 RTC_DATA_ATTR float rtc_deviceLongitude = MY_LONGITUDE;
@@ -110,11 +112,11 @@ void turnScreenOff() {
 
 // --- RTC Memory Functions ---
 void saveStateToRTC() {
-    #if DEBUG_LPM
-    Serial.println("Saving state to RTC...");
+    #if DEBUG_RTC
+    Serial.printf("RTC SAVE: Attempting to save rtc_isLowPowerModeActive = %s\n", isLowPowerModeActive ? "true" : "false");
     #endif
     rtc_magic_cookie = RTC_MAGIC_VALUE;
-    rtc_isLowPowerModeActive = isLowPowerModeActive;
+    rtc_isLowPowerModeActive = isLowPowerModeActive; // This is the critical flag for LPM state
     rtc_useGpsFromSecretsGlobal = useGpsFromSecrets;
 
     if (rtc_hasValidData) { 
@@ -124,30 +126,27 @@ void saveStateToRTC() {
         }
         strncpy(rtc_lastUpdateTimeStr_char, lastUpdateTimeStr.c_str(), sizeof(rtc_lastUpdateTimeStr_char) - 1);
         rtc_lastUpdateTimeStr_char[sizeof(rtc_lastUpdateTimeStr_char) - 1] = '\0';
-
         strncpy(rtc_locationDisplayStr_char, locationDisplayStr.c_str(), sizeof(rtc_locationDisplayStr_char) - 1);
         rtc_locationDisplayStr_char[sizeof(rtc_locationDisplayStr_char) - 1] = '\0';
-        
         rtc_deviceLatitude = deviceLatitude;
         rtc_deviceLongitude = deviceLongitude;
     }
-    #if DEBUG_LPM
-    Serial.printf("RTC Save: LPM Active: %s, HasValidData: %s, UseGPSSecrets: %s\n",
-                  rtc_isLowPowerModeActive ? "Yes" : "No", 
-                  rtc_hasValidData ? "Yes" : "No", 
-                  rtc_useGpsFromSecretsGlobal ? "Yes" : "No");
-    Serial.printf("RTC Save: Lat: %.4f, Lon: %.4f\n", rtc_deviceLatitude, rtc_deviceLongitude);
-    Serial.printf("RTC Save: LastUpdate: %s, LocationDisplay: %s\n", rtc_lastUpdateTimeStr_char, rtc_locationDisplayStr_char);
+    #if DEBUG_RTC
+    Serial.printf("RTC SAVE COMPLETE: rtc_isLowPowerModeActive is now %s in RTC memory structure.\n", rtc_isLowPowerModeActive ? "true" : "false");
+    Serial.printf("RTC Save: HasValidData: %s, UseGPSSecrets: %s\n", rtc_hasValidData ? "Yes" : "No", rtc_useGpsFromSecretsGlobal ? "Yes" : "No");
     #endif
 }
 
 void loadStateFromRTC() {
-    #if DEBUG_LPM
-    Serial.println("Loading state from RTC...");
+    #if DEBUG_RTC
+    Serial.println("RTC LOAD: Attempting to load state from RTC...");
     #endif
     if (rtc_magic_cookie == RTC_MAGIC_VALUE) {
-        isLowPowerModeActive = rtc_isLowPowerModeActive;
+        isLowPowerModeActive = rtc_isLowPowerModeActive; // Load the persisted LPM state
         useGpsFromSecrets = rtc_useGpsFromSecretsGlobal;
+        #if DEBUG_RTC
+        Serial.printf("RTC LOAD: Loaded rtc_isLowPowerModeActive = %s into working isLowPowerModeActive.\n", isLowPowerModeActive ? "true" : "false");
+        #endif
         if (rtc_hasValidData) { 
             for (int i = 0; i < HOURLY_FORECAST_COUNT; ++i) {
                 hourlyUV[i] = rtc_hourlyUV[i];
@@ -168,10 +167,10 @@ void loadStateFromRTC() {
             #endif
         }
     } else { 
-        #if DEBUG_LPM
-        Serial.println("RTC magic cookie mismatch or first boot. Initializing RTC data to defaults.");
+        #if DEBUG_RTC
+        Serial.println("RTC LOAD: Magic cookie mismatch or first boot. Initializing RTC data to defaults.");
         #endif
-        isLowPowerModeActive = false;
+        isLowPowerModeActive = false; // Default to Normal Mode on first boot/corruption
         rtc_isLowPowerModeActive = false;
         useGpsFromSecrets = false; 
         rtc_useGpsFromSecretsGlobal = false;
@@ -187,7 +186,7 @@ void loadStateFromRTC() {
         rtc_deviceLongitude = MY_LONGITUDE;
         deviceLatitude = MY_LATITUDE;
         deviceLongitude = MY_LONGITUDE;
-        saveStateToRTC(); 
+        saveStateToRTC(); // Save this initial default state
     }
     #if DEBUG_LPM
     Serial.printf("Loaded from RTC: LPM Active: %s, UseGPSSecrets: %s, RTCValidData: %s\n",
@@ -204,29 +203,24 @@ uint64_t calculateSleepUntilNextHH05() {
         Serial.println("Failed to obtain time for sleep calculation. Sleeping for 1 hour as fallback.");
         return 60 * 60 * 1000000ULL;
     }
-
     #if DEBUG_LPM
     char timeBuff[30];
     strftime(timeBuff, sizeof(timeBuff), "%A, %B %d %Y %H:%M:%S", &timeinfo);
     Serial.printf("Current time for sleep calc: %s\n", timeBuff);
     #endif
-
     time_t now = mktime(&timeinfo);
     struct tm targetTimeInfo = timeinfo;
     targetTimeInfo.tm_min = 5;
     targetTimeInfo.tm_sec = 0;
-
     if (mktime(&targetTimeInfo) <= now) { 
         targetTimeInfo.tm_hour += 1; 
     }
     time_t targetTimeEpoch = mktime(&targetTimeInfo);
     uint64_t sleepDurationS = difftime(targetTimeEpoch, now);
-
     if (sleepDurationS <= 0 || sleepDurationS > (2 * 60 * 60)) { 
         Serial.printf("Unusual sleep duration calculated (%llu s). Defaulting to 1 hour.\n", sleepDurationS);
         return 60 * 60 * 1000000ULL;
     }
-    
     #if DEBUG_LPM
     Serial.printf("Sleep duration: %llu seconds until next HH:05.\n", sleepDurationS);
     #endif
@@ -234,7 +228,7 @@ uint64_t calculateSleepUntilNextHH05() {
 }
 
 void enterDeepSleep(uint64_t duration_us, bool alsoEnableButtonWake) {
-    saveStateToRTC();
+    saveStateToRTC(); // Crucial: Save state (including LPM active flag) before sleeping
     turnScreenOff();
     Serial.printf("Entering deep sleep for %llu us (approx %.2f minutes).\n", duration_us, (double)duration_us / 1000000.0 / 60.0);
     esp_sleep_enable_timer_wakeup(duration_us);
@@ -280,13 +274,17 @@ void setup() {
 
     printWakeupReason();
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
-    loadStateFromRTC(); 
+    
+    loadStateFromRTC(); // Load persisted state FIRST, this sets isLowPowerModeActive
+    #if DEBUG_RTC
+    Serial.printf("SETUP: After loadStateFromRTC(), isLowPowerModeActive = %s\n", isLowPowerModeActive ? "true" : "false");
+    #endif
 
     tft.init();
     tft.setRotation(1);
     tft.setTextDatum(MC_DATUM);
 
-    if (isLowPowerModeActive) {
+    if (isLowPowerModeActive) { // Check the loaded state
         if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
             #if DEBUG_LPM
             Serial.println("LPM: Timer Wake-up. Silent refresh cycle.");
@@ -319,20 +317,17 @@ void setup() {
             } else {
                 displayMessage("LPM: No data yet", "Hourly update pending", TFT_YELLOW, true);
             }
-            // DO NOT connectToWiFi or fetchUVData here on button wake. Only display RTC data.
-        } else { // This case handles power-on reset if rtc_isLowPowerModeActive was true
+        } else { // Power-on reset or other wake reason while rtc_isLowPowerModeActive was true
             #if DEBUG_LPM
-            Serial.println("LPM: Non-timer/button wake (e.g. Power-On/Reset) OR initial boot into LPM state. Forcing LPM cycle.");
+            Serial.println("LPM: Non-timer/button wake (e.g. Power-On/Reset) while RTC indicated LPM was active. Forcing LPM cycle.");
             #endif
-            // isLowPowerModeActive is already true from loadStateFromRTC()
             temporaryScreenWakeupActive = false; 
-            turnScreenOn(); // Briefly show a message that we are entering LPM
+            turnScreenOn(); 
             displayMessage("LPM Active", "Initializing...", TFT_BLUE, true);
             delay(1500);
-            // Screen will be turned off by enterDeepSleep
-            enterDeepSleep(calculateSleepUntilNextHH05(), true); // Go into the standard LPM sleep cycle
+            enterDeepSleep(calculateSleepUntilNextHH05(), true); 
         }
-    } else { // Normal Mode (isLowPowerModeActive is false, loaded from RTC or default)
+    } else { // Normal Mode (isLowPowerModeActive is false)
         #if DEBUG_LPM
         Serial.println("Normal Mode Startup.");
         #endif
@@ -340,9 +335,7 @@ void setup() {
         turnScreenOn();
         tft.fillScreen(TFT_BLACK);
 
-        // If rtc_hasValidData is true, it implies we might have woken from a state where data was good
-        // (e.g. LPM was just turned off, or a normal power cycle with previous good data)
-        if (rtc_hasValidData && wakeup_reason != ESP_SLEEP_WAKEUP_UNDEFINED) { // ESP_SLEEP_WAKEUP_UNDEFINED is power-on
+        if (rtc_hasValidData && wakeup_reason != ESP_SLEEP_WAKEUP_UNDEFINED) { 
              #if DEBUG_LPM
             Serial.println("Normal Mode: Resuming with RTC data available.");
             #endif
@@ -401,17 +394,13 @@ void loop() {
                 temporaryScreenWakeupActive = false;
                 enterDeepSleep(calculateSleepUntilNextHH05(), true);
             }
-            // dataJustFetched might be true if location was changed while screen was temp on
-        } else { // LPM active, screen not temporarily on
+        } else { 
             #if DEBUG_LPM
-            // This state should ideally only be reached if setup() decided to sleep immediately,
-            // or if a button action turned LPM ON and initiated sleep.
-            // If loop() is reached here, it's a fallback to ensure it sleeps.
             Serial.println("LPM: Active, screen off. Fallback to deep sleep from loop.");
             #endif
             enterDeepSleep(calculateSleepUntilNextHH05(), true);
         }
-    } else { // Normal Mode
+    } else { 
         unsigned long currentMillis = millis();
         if ((WiFi.status() == WL_CONNECTED) && (currentMillis - lastDataFetchAttemptMs >= UPDATE_INTERVAL_MS_NORMAL_MODE)) {
             Serial.println("Normal Mode: Update interval reached.");
@@ -422,15 +411,14 @@ void loop() {
                 lastDataFetchAttemptMs = currentMillis; 
             } else {
                 Serial.println("Normal Mode: UV Data fetch failed for periodic update.");
-                // Not updating lastDataFetchAttemptMs, so it will retry sooner.
             }
-        } else if (WiFi.status() != WL_CONNECTED && (currentMillis - lastDataFetchAttemptMs >= 60000)) { // Retry WiFi connect every minute if down
+        } else if (WiFi.status() != WL_CONNECTED && (currentMillis - lastDataFetchAttemptMs >= 60000)) { 
              Serial.println("Normal Mode: No WiFi. Attempting reconnect...");
              connectToWiFi(false); 
-             if(WiFi.status() == WL_CONNECTED) { // If reconnected, try to fetch data immediately
-                lastDataFetchAttemptMs = 0; // Force immediate fetch attempt on next suitable loop iteration
+             if(WiFi.status() == WL_CONNECTED) { 
+                lastDataFetchAttemptMs = 0; 
              } else {
-                lastDataFetchAttemptMs = currentMillis; // Don't spam connection attempts
+                lastDataFetchAttemptMs = currentMillis; 
                 lastUpdateTimeStr = "Offline";
                 initializeForecastData(); 
                 dataJustFetched = true; 
@@ -438,9 +426,8 @@ void loop() {
         }
     }
 
-    // Common Display Update Logic
     if (force_display_update || dataJustFetched) {
-        if (!isLowPowerModeActive || temporaryScreenWakeupActive) { // Only display if screen is supposed to be on
+        if (!isLowPowerModeActive || temporaryScreenWakeupActive) { 
             displayInfo();
         }
         force_display_update = false;
@@ -465,22 +452,46 @@ void handle_buttons() {
                 rtc_useGpsFromSecretsGlobal = useGpsFromSecrets; 
                 Serial.printf("Location Mode Toggled (Long Press): %s\n", useGpsFromSecrets ? "Secrets GPS" : "IP Geolocation");
 
-                if (useGpsFromSecrets) {
+                bool connectionAttempted = false;
+                if (WiFi.status() != WL_CONNECTED) {
+                    Serial.println("Location toggle: WiFi disconnected, attempting connect...");
+                    displayMessage("Connecting to WiFi...", "", TFT_YELLOW, true); // Show connecting message
+                    connectToWiFi(false); // Attempt non-silent connect
+                    connectionAttempted = true;
+                }
+
+                if (useGpsFromSecrets) { // Switched to Secrets GPS
                     deviceLatitude = MY_LATITUDE; deviceLongitude = MY_LONGITUDE;
                     locationDisplayStr = "Secrets GPS";
-                } else { 
+                    // Proceed to fetch UV data if WiFi is connected
+                } else { // Switched to IP Geolocation
                     locationDisplayStr = "IP Geo..."; 
-                    force_display_update = true; displayInfo(); 
-                    if (!fetchLocationFromIp(false)) { 
-                        locationDisplayStr = "IP Fail>Secrets"; 
-                        useGpsFromSecrets = true; rtc_useGpsFromSecretsGlobal = true; 
-                        deviceLatitude = MY_LATITUDE; deviceLongitude = MY_LONGITUDE;
+                    force_display_update = true; displayInfo(); // Update display to show "IP Geo..."
+                    
+                    if (WiFi.status() == WL_CONNECTED) {
+                        if (!fetchLocationFromIp(false)) { 
+                            locationDisplayStr = "IP Fail>Secrets"; 
+                            useGpsFromSecrets = true; rtc_useGpsFromSecretsGlobal = true; 
+                            deviceLatitude = MY_LATITUDE; deviceLongitude = MY_LONGITUDE;
+                        }
+                    } else { // WiFi still not connected after attempt (or was already off and attempt failed)
+                         locationDisplayStr = "IP (NoNet)";
+                         useGpsFromSecrets = true; rtc_useGpsFromSecretsGlobal = true; 
+                         deviceLatitude = MY_LATITUDE; deviceLongitude = MY_LONGITUDE;
+                         locationDisplayStr = "IP Fail>Secrets"; // Fallback display
+                         Serial.println("Location toggle: WiFi connection failed for IP Geo. Reverted to Secrets.");
                     }
                 }
                 
-                displayMessage("Fetching UV data...", locationDisplayStr.substring(0,18), TFT_CYAN, true);
-                if (fetchUVData(false)) { 
-                    if (!isLowPowerModeActive) lastDataFetchAttemptMs = current_millis; 
+                if (WiFi.status() == WL_CONNECTED) {
+                    displayMessage("Fetching UV data...", locationDisplayStr.substring(0,18), TFT_CYAN, true);
+                    if (fetchUVData(false)) { 
+                        if (!isLowPowerModeActive) lastDataFetchAttemptMs = current_millis; 
+                    }
+                } else { 
+                     Serial.println("Location toggle: WiFi still disconnected. Cannot fetch UV data.");
+                     lastUpdateTimeStr = "Offline"; 
+                     initializeForecastData(); 
                 }
 
                 if (isLowPowerModeActive && temporaryScreenWakeupActive) {
@@ -509,24 +520,30 @@ void handle_buttons() {
         button_lp_press_start_time = current_millis; button_lp_is_held = false;
     } else if (current_lp_button_state == LOW && !button_lp_is_held) { 
         if (current_millis - button_lp_press_start_time > LONG_PRESS_TIME_MS) { 
-            isLowPowerModeActive = !isLowPowerModeActive; rtc_isLowPowerModeActive = isLowPowerModeActive; 
+            isLowPowerModeActive = !isLowPowerModeActive; 
+            // rtc_isLowPowerModeActive will be updated in saveStateToRTC() before sleep or immediately if turning off
             Serial.printf("LPM Toggled (Long Press): %s\n", isLowPowerModeActive ? "ON" : "OFF");
             
             if (isLowPowerModeActive) { // Turning LPM ON
-                temporaryScreenWakeupActive = false; turnScreenOn(); 
+                temporaryScreenWakeupActive = false; 
+                rtc_isLowPowerModeActive = true; // Update RTC variable immediately
+                saveStateToRTC(); // Save state before showing message and sleeping
+                turnScreenOn(); 
                 displayMessage("Low Power Mode: ON", "Sleeping...", TFT_BLUE, true); delay(2000);
                 enterDeepSleep(calculateSleepUntilNextHH05(), true); 
             } else { // Turning LPM OFF
                 temporaryScreenWakeupActive = false; 
+                rtc_isLowPowerModeActive = false; // Update RTC variable immediately
+                saveStateToRTC(); // Save the new "Normal Mode" state
                 turnScreenOn(); 
                 displayMessage("Low Power Mode: OFF", "", TFT_GREEN, true); 
-                delay(1500); // Keep message visible
+                delay(1500); 
 
                 Serial.println("Exiting LPM: Attempting WiFi connection and data refresh...");
-                connectToWiFi(false); // Non-silent connect attempt
+                connectToWiFi(false); 
                 if (WiFi.status() == WL_CONNECTED) {
-                    displayMessage("Fetching data...", "", TFT_CYAN, true); // Show progress
-                    if (fetchUVData(false)) { // Non-silent fetch
+                    displayMessage("Fetching data...", "", TFT_CYAN, true); 
+                    if (fetchUVData(false)) { 
                         Serial.println("Data refreshed after exiting LPM.");
                     } else {
                         Serial.println("Failed to refresh data after exiting LPM.");
@@ -537,7 +554,7 @@ void handle_buttons() {
                     initializeForecastData();    
                 }
                 
-                lastDataFetchAttemptMs = millis(); // Reset the timer for normal periodic updates
+                lastDataFetchAttemptMs = millis(); 
                 force_display_update = true; 
             }
             button_lp_is_held = true; button_lp_last_press_time = current_millis;
@@ -581,7 +598,11 @@ void displayInfo() {
             tft.setTextColor(TFT_GREENYELLOW, TFT_BLACK); String ssid_str = WiFi.SSID();
             if (ssid_str.length() > 16) ssid_str = ssid_str.substring(0, 13) + "...";
             tft.drawString("WiFi: " + ssid_str, padding, current_info_y);
-        } else {
+        } else if (isConnectingToWiFi) { // New condition for "Connecting..."
+             tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+             tft.drawString("WiFi: Connecting...", padding, current_info_y);
+        }
+         else { // WiFi not connected and not actively trying
             tft.setTextColor(TFT_RED, TFT_BLACK); tft.drawString("WiFi: Offline", padding, current_info_y);
         }
         tft.setTextDatum(TR_DATUM); tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
@@ -596,11 +617,16 @@ void displayInfo() {
         tft.drawString(locText, padding, current_info_y);
         top_y_offset = current_info_y + info_font_height / 2 + padding * 2;
     } else { 
-        if (WiFi.status() != WL_CONNECTED) {
+        if (WiFi.status() != WL_CONNECTED && !isConnectingToWiFi) { // Not connected and not trying
             tft.setTextDatum(MC_DATUM); tft.setTextColor(TFT_RED, TFT_BLACK);
             tft.drawString("! No WiFi Connection !", tft.width() / 2, base_top_text_line_y);
             top_y_offset = base_top_text_line_y + info_font_height / 2 + padding * 2;
+        } else if (isConnectingToWiFi) { // Actively trying to connect
+             tft.setTextDatum(MC_DATUM); tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+             tft.drawString("Connecting to WiFi...", tft.width()/2, base_top_text_line_y);
+             top_y_offset = base_top_text_line_y + info_font_height / 2 + padding * 2;
         }
+
         if (isLowPowerModeActive && temporaryScreenWakeupActive) {
             tft.setTextDatum(TR_DATUM); tft.setTextColor(TFT_ORANGE, TFT_BLACK);
             tft.drawString("LPM", tft.width() - padding, base_top_text_line_y);
@@ -674,7 +700,12 @@ void drawForecastGraph(int start_y_offset) {
 
 // --- Network and Data Fetching Functions ---
 void connectToWiFi(bool silent) {
-    if (!silent) Serial.println("Connecting to WiFi using secrets.h values...");
+    isConnectingToWiFi = true; // Set flag at the beginning
+    if (!silent) {
+        Serial.println("Connecting to WiFi using secrets.h values...");
+        // displayMessage("Connecting to WiFi...", "", TFT_YELLOW, true); // This will be handled by displayInfo now
+        force_display_update = true; // Trigger displayInfo to show "Connecting..."
+    }
     #if DEBUG_LPM
     else Serial.println("LPM Silent: Connecting to WiFi...");
     #endif
@@ -705,6 +736,9 @@ void connectToWiFi(bool silent) {
       }
     #endif
 
+    isConnectingToWiFi = false; // Reset flag after attempts
+    force_display_update = true; // Trigger displayInfo to show final status (Connected/Offline)
+
     if (connected) {
         if (!silent) {
             Serial.println("\nWiFi connected!"); Serial.print("SSID: "); Serial.println(connected_ssid);
@@ -726,7 +760,7 @@ void connectToWiFi(bool silent) {
     } else { 
         if (!silent) {
             Serial.println("\nCould not connect to any configured WiFi network.");
-            displayMessage("WiFi Connection Failed.", "Check credentials.", TFT_RED, true);
+            // displayMessage("WiFi Connection Failed.", "Check credentials.", TFT_RED, true); // displayInfo will show "Offline"
         }
         #if DEBUG_LPM
         else Serial.println("LPM Silent: WiFi connection failed.");
