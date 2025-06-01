@@ -85,7 +85,7 @@ void turnScreenOn();
 void turnScreenOff();
 void savePersistentState(); 
 void loadPersistentState(); 
-uint64_t calculateSleepUntilNextTargetMinute(); // Renamed
+uint64_t calculateSleepUntilNextTargetMinute(); 
 void enterDeepSleep(uint64_t duration_us, bool alsoEnableButtonWake);
 void printWakeupReason();
 
@@ -159,12 +159,12 @@ void loadPersistentState() {
     #endif
 
     byte lpmFlagFromEEPROM = EEPROM.read(LPM_FLAG_EEPROM_ADDR);
-    if (lpmFlagFromEEPROM == 0 || lpmFlagFromEEPROM == 1) { // Check for 0 or 1
+    if (lpmFlagFromEEPROM == 0 || lpmFlagFromEEPROM == 1) { 
         isLowPowerModeActive = (bool)lpmFlagFromEEPROM;
         #if DEBUG_PERSISTENCE
         Serial.printf("PERSISTENCE LOAD: Loaded isLowPowerModeActive = %s from EEPROM.\n", isLowPowerModeActive ? "true" : "false");
         #endif
-    } else { // EEPROM likely uninitialized (e.g. 0xFF on first use)
+    } else { 
         #if DEBUG_PERSISTENCE
         Serial.printf("PERSISTENCE LOAD: EEPROM LPM flag uninitialized (read: 0x%X). Defaulting to LPM OFF.\n", lpmFlagFromEEPROM);
         #endif
@@ -212,8 +212,6 @@ void loadPersistentState() {
         deviceLatitude = MY_LATITUDE;
         deviceLongitude = MY_LONGITUDE;
         rtc_magic_cookie = RTC_MAGIC_VALUE; 
-        // savePersistentState(); // Don't save here, let setup complete its logic first
-                               // especially if it's a power-on reset that needs to fetch data.
     }
     #if DEBUG_LPM
     Serial.printf("Loaded Persistent State: LPM Active: %s, UseGPSSecrets: %s, RTCValidData: %s\n",
@@ -224,7 +222,7 @@ void loadPersistentState() {
 }
 
 // --- Deep Sleep Functions ---
-uint64_t calculateSleepUntilNextTargetMinute() { // Renamed
+uint64_t calculateSleepUntilNextTargetMinute() { 
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo, 5000)) {
         Serial.println("Failed to obtain time for sleep calculation. Sleeping for 1 hour as fallback.");
@@ -237,7 +235,7 @@ uint64_t calculateSleepUntilNextTargetMinute() { // Renamed
     #endif
     time_t now = mktime(&timeinfo);
     struct tm targetTimeInfo = timeinfo;
-    targetTimeInfo.tm_min = SILENT_REFRESH_TARGET_MINUTE; // Use new constant
+    targetTimeInfo.tm_min = SILENT_REFRESH_TARGET_MINUTE; 
     targetTimeInfo.tm_sec = 0;
     if (mktime(&targetTimeInfo) <= now) { 
         targetTimeInfo.tm_hour += 1; 
@@ -246,7 +244,7 @@ uint64_t calculateSleepUntilNextTargetMinute() { // Renamed
     uint64_t sleepDurationS = difftime(targetTimeEpoch, now);
     if (sleepDurationS <= 0 || sleepDurationS > (2 * 60 * 60)) { 
         Serial.printf("Unusual sleep duration calculated (%llu s). Defaulting to 1 hour.\n", sleepDurationS);
-        return 60 * 60 * 1000000ULL; // Fallback to 1 hour
+        return 60 * 60 * 1000000ULL; 
     }
     #if DEBUG_LPM
     Serial.printf("Sleep duration: %llu seconds until next HH:%02d.\n", sleepDurationS, SILENT_REFRESH_TARGET_MINUTE);
@@ -313,28 +311,27 @@ void setup() {
     tft.setRotation(1);
     tft.setTextDatum(MC_DATUM);
 
-    bool performInitialDataFetch = (wakeup_reason == ESP_SLEEP_WAKEUP_UNDEFINED); // True for power-on reset
+    bool performInitialDataFetchOnPowerOn = (wakeup_reason == ESP_SLEEP_WAKEUP_UNDEFINED); 
 
-    if (performInitialDataFetch) {
+    if (performInitialDataFetchOnPowerOn) {
         #if DEBUG_LPM
         Serial.println("SETUP: Power-on reset detected. Performing initial data fetch sequence.");
         #endif
-        temporaryScreenWakeupActive = false; // Should be normal mode initially for this fetch
+        // Regardless of previous LPM state, on power-on, behave like normal mode temporarily for fetch
         turnScreenOn();
         tft.fillScreen(TFT_BLACK);
         displayMessage("Connecting to WiFi...", "", TFT_YELLOW, true);
         connectToWiFi(false); 
 
         if (WiFi.status() == WL_CONNECTED) {
-            // Determine initial location based on (EEPROM loaded) useGpsFromSecrets
             if (useGpsFromSecrets) { 
                 deviceLatitude = MY_LATITUDE; deviceLongitude = MY_LONGITUDE;
                 locationDisplayStr = "Secrets GPS";
             } else { 
                 displayMessage("Fetching IP Location...", "", TFT_SKYBLUE, true);
                 if (fetchLocationFromIp(false)) { /* Updates globals */ }
-                else { // IP Geo failed
-                    useGpsFromSecrets = true; // Fallback
+                else { 
+                    useGpsFromSecrets = true; 
                     deviceLatitude = MY_LATITUDE; deviceLongitude = MY_LONGITUDE;
                     locationDisplayStr = "IP Fail>Secrets";
                 }
@@ -342,7 +339,7 @@ void setup() {
             String currentStatusForDisplay = locationDisplayStr;
             if (currentStatusForDisplay.length() > 18) currentStatusForDisplay = currentStatusForDisplay.substring(0,15) + "...";
             displayMessage("Fetching UV data...", currentStatusForDisplay, TFT_CYAN, true);
-            fetchUVData(false); // This will set rtc_hasValidData on success
+            fetchUVData(false); 
             lastDataFetchAttemptMs = millis(); 
         } else { 
             locationDisplayStr = "Offline>Secrets"; 
@@ -352,13 +349,12 @@ void setup() {
             lastUpdateTimeStr = "Offline";
         }
         force_display_update = true; 
-        savePersistentState(); // Save potentially new GPS preference and RTC data after initial fetch
+        savePersistentState(); // Save new GPS pref (if changed by IP fail) and RTC data
     }
 
-
-    // Now, decide operational mode based on isLowPowerModeActive (which might have been set by user before power cycle)
+    // Now, decide operational mode based on isLowPowerModeActive (loaded from EEPROM)
     if (isLowPowerModeActive) { 
-        if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) { // LPM Timer Wake
+        if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) { 
             #if DEBUG_LPM
             Serial.println("LPM: Timer Wake-up. Silent refresh cycle.");
             #endif
@@ -367,47 +363,52 @@ void setup() {
             connectToWiFi(true); 
             if (WiFi.status() == WL_CONNECTED) fetchUVData(true); 
             enterDeepSleep(calculateSleepUntilNextTargetMinute(), true);
-        } else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) { // LPM Button Wake
+        } else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) { 
             #if DEBUG_LPM
             Serial.println("LPM: Button Wake-up (GPIO 0). Temporary screen on.");
             #endif
             temporaryScreenWakeupActive = true;
             screenActiveUntilMs = millis() + SCREEN_ON_DURATION_LPM_MS;
             turnScreenOn();
-            tft.fillScreen(TFT_BLACK); // Clear screen for temp display
-            if (rtc_hasValidData) force_display_update = true;
+            tft.fillScreen(TFT_BLACK); 
+            if (rtc_hasValidData) force_display_update = true; // Display RTC data
             else displayMessage("LPM: No data yet", "Hourly update pending", TFT_YELLOW, true);
-        } else { // Includes power-on reset if LPM was active (performInitialDataFetch already ran)
+        } else { // Includes power-on reset if LPM was active (performInitialDataFetchOnPowerOn already ran)
             #if DEBUG_LPM
             Serial.println("LPM: EEPROM indicated LPM active. Entering LPM cycle.");
             Serial.printf("LPM: Wakeup reason was %d. If power-on, initial fetch already done.\n", wakeup_reason);
             #endif
             temporaryScreenWakeupActive = false; 
-            // If it was a power-on reset, screen is already on from initial fetch.
-            // Otherwise, ensure it's on briefly for the message.
-            if (wakeup_reason != ESP_SLEEP_WAKEUP_UNDEFINED) turnScreenOn(); 
-            displayMessage("LPM Active", "Initializing...", TFT_BLUE, true);
-            delay(1500);
+            if (wakeup_reason != ESP_SLEEP_WAKEUP_UNDEFINED) { // If not power-on (where screen is already on)
+                turnScreenOn(); 
+                displayMessage("LPM Active", "Initializing...", TFT_BLUE, true);
+                delay(1500);
+            } else { // Power-on, screen is on, just show message briefly before sleep
+                 displayMessage("LPM Resuming", "Sleeping...", TFT_BLUE, true);
+                 delay(2000);
+            }
             enterDeepSleep(calculateSleepUntilNextTargetMinute(), true); 
         }
     } else { // Normal Mode (isLowPowerModeActive is false)
-        if (!performInitialDataFetch) { // If not a power-on reset, ensure screen is on and data displayed
+        if (!performInitialDataFetchOnPowerOn) { 
             #if DEBUG_LPM
-            Serial.println("Normal Mode Startup (not power-on reset).");
+            Serial.println("Normal Mode Startup (not power-on reset, e.g., LPM turned off by button).");
             #endif
             temporaryScreenWakeupActive = false;
             turnScreenOn();
             tft.fillScreen(TFT_BLACK);
             if (rtc_hasValidData) force_display_update = true; 
-            else { // No valid RTC data, might need a fetch if WiFi is available
-                connectToWiFi(false);
+            else { 
+                // This case implies LPM was just turned off, and RTC might be stale or invalid.
+                // The button handler for turning LPM OFF already does a fetch.
+                // If we somehow get here without that, ensure data is shown or fetched.
+                if (WiFi.status() != WL_CONNECTED) connectToWiFi(false);
                 if(WiFi.status() == WL_CONNECTED) fetchUVData(false);
                 else { lastUpdateTimeStr = "Offline"; initializeForecastData();}
             }
         }
-         // If performInitialDataFetch was true, screen is on and data fetched already.
-         // Just ensure force_display_update is set if not already.
-        if (force_display_update == false && rtc_hasValidData) force_display_update = true;
+        // If performInitialDataFetchOnPowerOn was true, screen is on and data fetched already.
+        if (force_display_update == false && (rtc_hasValidData || performInitialDataFetchOnPowerOn) ) force_display_update = true;
     }
 }
 
@@ -641,28 +642,26 @@ void displayInfo() {
         tft.drawString(locText, padding, current_info_y);
         top_y_offset = current_info_y + info_font_height / 2 + padding * 2;
     } else { // Info overlay is OFF
-        // Display small status icons/text in top right if overlay is off
         tft.setTextDatum(TR_DATUM);
         int status_x = tft.width() - padding;
         int status_y = base_top_text_line_y;
-        int status_offset = 0; // To stack multiple statuses if needed
-
-        if (isLowPowerModeActive && temporaryScreenWakeupActive) {
-            tft.setTextColor(TFT_ORANGE, TFT_BLACK);
-            tft.drawString("LPM", status_x, status_y + status_offset);
-            status_offset += info_font_height; // Move next status down if LPM is shown
-        }
-
+        
         if (WiFi.status() != WL_CONNECTED && !isConnectingToWiFi) { 
             tft.setTextColor(TFT_RED, TFT_BLACK);
-            tft.drawString("NoFi", status_x, status_y + status_offset);
+            tft.drawString("NoFi", status_x, status_y);
         } else if (isConnectingToWiFi) { 
              tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-             tft.drawString("WiFi?", status_x, status_y + status_offset);
+             tft.drawString("WiFi?", status_x, status_y);
         }
-        // If neither of above, this area remains clear or shows graph
-        // Adjust top_y_offset if these small indicators are present, though they are high up
-        // For simplicity, we'll let the graph draw from its usual top_y_offset calculation based on overlay state
+        // No separate LPM indicator here anymore if overlay is off
+        // top_y_offset calculation for graph remains based on whether the (now non-existent)
+        // large "No WiFi Connection" message would have been shown.
+        // If WiFi is connected or connecting, top_y_offset remains small.
+        // If WiFi is definitively offline, we still reserve space as if the old message was there.
+        // This could be refined if a more compact layout is always desired when overlay is off.
+        if (WiFi.status() != WL_CONNECTED && !isConnectingToWiFi) {
+             top_y_offset = base_top_text_line_y + info_font_height / 2 + padding * 2;
+        }
     }
     drawForecastGraph(top_y_offset);
 }
