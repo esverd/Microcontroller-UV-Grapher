@@ -13,19 +13,19 @@ const int WIFI_CONNECTION_TIMEOUT_MS = 15000;
 const unsigned long SCREEN_ON_DURATION_LPM_MS = 30 * 1000; // 30 second screen on time in LPM
 
 // --- New Scheduling Configuration ---
-const byte REFRESH_TARGET_MINUTE = 5;         // Base minute of the hour for the first refresh slot (0-59)
-const byte UPDATES_PER_HOUR_NORMAL_MODE = 59;  // e.g., 4 for every 15 mins, 2 for every 30 mins, 1 for hourly
-const byte UPDATES_PER_HOUR_LPM = 59;          // e.g., 1 for hourly (at REFRESH_TARGET_MINUTE)
+const byte REFRESH_TARGET_MINUTE = 2;         // Base minute of the hour for the first refresh slot (0-59)
+const byte UPDATES_PER_HOUR_NORMAL_MODE = 4;  // e.g., 4 for every 15 mins, 2 for every 30 mins, 1 for hourly
+const byte UPDATES_PER_HOUR_LPM = 1;          // e.g., 1 for hourly (at REFRESH_TARGET_MINUTE)
 
 // --- EEPROM Configuration ---
 #define EEPROM_SIZE 1          // Size for EEPROM (1 byte for LPM flag)
 #define LPM_FLAG_EEPROM_ADDR 0 // EEPROM address for LPM flag
 
 // --- Debugging Flags ---
-#define DEBUG_LPM 1             // Set to 1 to enable LPM specific logs
+#define DEBUG_LPM 0             // Set to 1 to enable LPM specific logs
 #define DEBUG_GRAPH_DRAWING 0   // Set to 1 to enable detailed graph drawing logs, 0 to disable
-#define DEBUG_PERSISTENCE 1     // Set to 1 to enable detailed EEPROM/RTC save/load logs
-#define DEBUG_SCHEDULING 1      // Set to 1 to enable detailed scheduling logs
+#define DEBUG_PERSISTENCE 0     // Set to 1 to enable detailed EEPROM/RTC save/load logs
+#define DEBUG_SCHEDULING 0      // Set to 1 to enable detailed scheduling logs
 
 // --- Pins ---
 #define BUTTON_INFO_PIN 0         // GPIO 0 for info overlay, location toggle, and primary wake from LPM
@@ -957,6 +957,7 @@ void drawForecastGraph(int start_y_offset) {
     int first_uv_val_font = 6; 
     int other_uv_val_font = 4; 
     int hour_label_font = 2;   
+    const int UV_TEXT_OUTLINE_THICKNESS = 2; // User can adjust this (e.g., 1 or 2) for thicker outline
 
     tft.setTextFont(first_uv_val_font);
     int first_uv_text_h = tft.fontHeight();
@@ -976,7 +977,7 @@ void drawForecastGraph(int start_y_offset) {
     if (max_bar_pixel_height < 10) max_bar_pixel_height = 10;
     if (max_bar_pixel_height < 20 && tft.height() > 100) max_bar_pixel_height = 20; 
 
-    const float MAX_UV_FOR_FULL_SCALE = 10.0f; 
+    const float MAX_UV_FOR_FULL_SCALE = 8.0f; // Changed from 10.0f
     float pixel_per_uv_unit = 0;
     if (MAX_UV_FOR_FULL_SCALE > 0) {
         pixel_per_uv_unit = (float)max_bar_pixel_height / MAX_UV_FOR_FULL_SCALE;
@@ -994,7 +995,7 @@ void drawForecastGraph(int start_y_offset) {
         int bar_center_x = graph_area_x_start + (i * bar_slot_width) + (bar_slot_width / 2);
 
         tft.setTextFont(hour_label_font);
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextColor(TFT_WHITE); // Text color for hour label (transparent background)
         tft.setTextDatum(MC_DATUM); 
         if (forecastHours[i] >= 0 && forecastHours[i] <= 23) { 
             tft.drawString(String(forecastHours[i]), bar_center_x, hour_label_y);
@@ -1015,6 +1016,7 @@ void drawForecastGraph(int start_y_offset) {
 
         if (forecastHours[i] >= 0 && forecastHours[i] <= 23) { 
             float uv_for_height_calc = (float)roundedUV; 
+            // Cap bar height at MAX_UV_FOR_FULL_SCALE, but text will show true value
             if (uv_for_height_calc > MAX_UV_FOR_FULL_SCALE) uv_for_height_calc = MAX_UV_FOR_FULL_SCALE; 
 
             int bar_height = round(uv_for_height_calc * pixel_per_uv_unit);
@@ -1043,7 +1045,7 @@ void drawForecastGraph(int start_y_offset) {
             }
 
             tft.setTextDatum(MC_DATUM); 
-            String uvText = String(roundedUV); 
+            String uvText = String(roundedUV); // Shows actual rounded UV, e.g. "11"
             int current_uv_text_y;
             uint16_t outlineColor = TFT_BLACK; 
             uint16_t foregroundColor = TFT_WHITE; 
@@ -1056,19 +1058,19 @@ void drawForecastGraph(int start_y_offset) {
                 current_uv_text_y = other_uv_values_line_y;
             }
 
-            tft.setTextColor(outlineColor);
-            const int outlineOffset = 1;
-            tft.drawString(uvText, bar_center_x - outlineOffset, current_uv_text_y - outlineOffset);
-            tft.drawString(uvText, bar_center_x + outlineOffset, current_uv_text_y - outlineOffset);
-            tft.drawString(uvText, bar_center_x - outlineOffset, current_uv_text_y + outlineOffset);
-            tft.drawString(uvText, bar_center_x + outlineOffset, current_uv_text_y + outlineOffset);
-            tft.drawString(uvText, bar_center_x - outlineOffset, current_uv_text_y);
-            tft.drawString(uvText, bar_center_x + outlineOffset, current_uv_text_y);
-            tft.drawString(uvText, bar_center_x, current_uv_text_y - outlineOffset);
-            tft.drawString(uvText, bar_center_x, current_uv_text_y + outlineOffset);
+            // Draw outline
+            tft.setTextColor(outlineColor); // Set outline color (e.g., black)
+            for (int ox = -UV_TEXT_OUTLINE_THICKNESS; ox <= UV_TEXT_OUTLINE_THICKNESS; ++ox) {
+                for (int oy = -UV_TEXT_OUTLINE_THICKNESS; oy <= UV_TEXT_OUTLINE_THICKNESS; ++oy) {
+                    if (ox == 0 && oy == 0) continue; // Don't draw the center with the outline color
+                    tft.drawString(uvText, bar_center_x + ox, current_uv_text_y + oy);
+                }
+            }
 
-            tft.setTextColor(foregroundColor, TFT_BLACK); 
+            // Draw main text with transparent background
+            tft.setTextColor(foregroundColor); // Set foreground color (e.g., white)
             tft.drawString(uvText, bar_center_x, current_uv_text_y);
+
 
         } else { 
             int placeholder_y;
@@ -1081,7 +1083,7 @@ void drawForecastGraph(int start_y_offset) {
                 placeholder_y = other_uv_values_line_y;
             }
             tft.setTextFont(placeholder_font);
-            tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+            tft.setTextColor(TFT_DARKGREY); // Transparent background for placeholder
             tft.setTextDatum(MC_DATUM);
             tft.drawString("-", bar_center_x, placeholder_y); 
         }
@@ -1109,10 +1111,6 @@ void connectToWiFi(bool silent) {
     bool connected = false;
     String connected_ssid = "";
 
-    // Define arrays for SSIDs and passwords
-    // Ensure WIFI_SSID_X and WIFI_PASS_X are defined in secrets.h
-    // For SSIDs/Passwords that might not be defined, use an empty string as a fallback in secrets.h
-    // e.g. #define WIFI_SSID_3 "" if not used.
     const char* ssids[] = {
         WIFI_SSID_1, 
         WIFI_SSID_2
@@ -1126,17 +1124,17 @@ void connectToWiFi(bool silent) {
     const char* passwords[] = {
         WIFI_PASS_1, 
         WIFI_PASS_2
-        #if defined(WIFI_SSID_3) // Assume if SSID_3 is defined, PASS_3 is too
+        #if defined(WIFI_SSID_3) 
         , WIFI_PASS_3
         #endif
-        #if defined(WIFI_SSID_4) // Assume if SSID_4 is defined, PASS_4 is too
+        #if defined(WIFI_SSID_4) 
         , WIFI_PASS_4
         #endif
     };
     int num_networks = sizeof(ssids) / sizeof(ssids[0]);
 
     for (int i = 0; i < num_networks; ++i) {
-        if (strlen(ssids[i]) > 0) { // Runtime check for non-empty SSID string
+        if (strlen(ssids[i]) > 0) { 
             if (!silent) {Serial.print("Attempting SSID: "); Serial.println(ssids[i]);}
             WiFi.begin(ssids[i], passwords[i]);
             unsigned long startTime = millis();
